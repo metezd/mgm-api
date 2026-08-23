@@ -1,18 +1,16 @@
-# Geliştirme
-
 Hızlı başlangıç için [README](../README.md)'ye bakın. Burada Docker'ın tüm
 seçenekleri, test/lint/CI ve bağımlılık yönetimi detayları var.
 
-## Docker
+## Docker Uygulaması
 
-Redis dahil tam yığın, tek komut:
+Uygulamayı tüm bağımlılıklarıyla birlikte ayağa kaldırmak için aşağıdaki komutları kullanabilirsiniz:
 
 ```bash
-cp .env.example .env   # değerler düzenlenebilir, boşsa varsayılanlar geçerlidir
+cp .env.example .env   # İsteğe bağlı olarak değişkenler düzenlenebilir
 docker compose up --build
 ```
 
-`MGM_REDIS_URL` otomatik olarak bundled Redis'e işaret eder; `.env` yoksa da
+`MGM_REDIS_URL` otomatik olarak bundled Redis'e yönlendirilir. `.env` yoksa da
 çalışır, varsayılanlarla devam eder.
 
 Sadece uygulamayı (Redis'siz, in-memory cache ile) çalıştırmak için:
@@ -22,10 +20,9 @@ docker build -t mgm-api .
 docker run -p 5000:5000 mgm-api
 ```
 
-Container'ın `/health` uç noktasını kullanan bir `HEALTHCHECK`'i var;
-`docker ps` çıktısında `healthy`/`unhealthy` olarak görünür.
+> **Not:** Docker imajı, sistemin durumunu izlemek üzere `/health` uç noktasını kullanan yapılandırılmış bir `HEALTHCHECK` barındırır. Konteynerin güncel sağlığı `docker ps` çıktısında `healthy` veya `unhealthy` olarak gözlemlenebilir.
 
-## Test ve lint
+## Test ve Lint
 
 ```bash
 python -m unittest discover -s tests -v
@@ -34,29 +31,35 @@ pip install ruff && ruff check .
 
 İkisi de CI'da her push/PR'da otomatik çalışır (`.github/workflows/main.yml`).
 
-## Bağımlılıklar
+## Bağımlılık Yönetimi
 
-`requirements.txt` gevşek (`>=`) aralıklar; `requirements-lock.txt` bundan
-üretilen tam pinlenmiş sürümlerdir — CI ve Docker build'leri lock dosyasını
-kullanır, reproducible build sağlar. Güncelleme adımları dosyanın başındaki
-yorumda yazıyor.
+Projedeki Python bağımlılıkları iki aşamalı bir yapıyla yönetilmektedir: 
+* `requirements.txt` dosyası esnek sürüm aralıklarını (`>=`) barındırır.
+* `requirements-lock.txt` dosyası ise bu gereksinimlerden üretilmiş, kesin olarak sabitlenmiş (*pinned*) sürümleri içerir. 
 
-Dependabot (`.github/dependabot.yml`) pip/Docker/GitHub Actions
-bağımlılıklarını haftalık tarar, güncelleme PR'ı açar.
+Sürekli entegrasyon (CI) süreçleri ve Docker build adımları, tekrarlanabilir yapılar elde etmek amacıyla her zaman `lock` dosyasını baz alır. Bağımlılıkların güncellenmesine dair talimatlar ilgili dosyanın üst kısmında yorum satırı olarak yer almaktadır.
 
-## Rate limiting
+Ayrıca projede yer alan Dependabot yapılandırması (`.github/dependabot.yml`), pip, Docker ve GitHub Actions bağımlılıklarını haftalık olarak tarar ve gerekli güncellemeler için otomatik PR oluşturur.
 
-`APP_RATE_LIMIT_WINDOW_SECONDS`/`APP_RATE_LIMIT_MAX_REQUESTS` IP başına sliding-window limiti uygular. Her yanıt `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
-`X-RateLimit-Reset` header'larını taşır. Sliding window olduğu için tek bir sabit reset anı yoktur `Reset`, en eski isteğin pencereden düşüp en az bir hakkın daha geri geleceği zamanı gösterir. `/health`, `/docs`, `/openapi.yaml` limitten muaf
+## Rate Limit
 
-## Response sıkıştırma
+Uygulama, IP tabanlı kayan pencere (*sliding-window*) algoritması kullanarak istekleri sınırlandırmaktadır. Bu sınırlandırmalar `APP_RATE_LIMIT_WINDOW_SECONDS` ve `APP_RATE_LIMIT_MAX_REQUESTS` ortam değişkenleri ile yapılandırılabilir.
 
-JSON/HTML/YAML yanıtları `Accept-Encoding: gzip` gönderen istemcilere
-otomatik sıkıştırılmış döner (`Flask-Compress`); ek bir yapılandırma
-gerekmez.
+API tarafından döndürülen her HTTP yanıtı, istemciyi bilgilendirmek amacıyla aşağıdaki başlıkları (*header*) içerir:
+* `X-RateLimit-Limit`: İzin verilen maksimum istek sayısı.
+* `X-RateLimit-Remaining`: Kalan istek hakkı.
+* `X-RateLimit-Reset`: Kayan pencere algoritması kullanıldığı için tek bir sabit sıfırlanma anı bulunmamaktadır. En eski isteğin zaman aşımına uğrayıp istemcinin en az bir yeni istek hakkı daha kazanacağı UNIX timestampini işaret eder.
+
+> **İstisnalar:** `/health`, `/docs` ve `/openapi.yaml` uç noktaları bu sınırlandırmalardan muaftır
+
+**Toplu İstek (Batch) Koruması:**
+İstek sınırlandırma mekanizması, paket içerisindeki öge sayısını değil, toplam HTTP isteği sayısını baz alır. Bu nedenle, tek bir istek içerisine çok sayıda sorgu paketlenerek limitlerin fiilen aşılmasını (bypass) engellemek amacıyla `POST /toplu` uç noktasına yapılan talepler `APP_TOPLU_MAX_SORGU` (varsayılan: `20`) ortam değişkeni ile ayrıca sınırlandırılmıştır.
+
+## Response Compression
+
+İstemci tarafından HTTP isteklerinde `Accept-Encoding: gzip` başlığı iletildiğinde; JSON, HTML ve YAML formatındaki yanıtlar `Flask-Compress` eklentisi kullanılarak otomatik olarak sıkıştırılır. Bu optimizasyon standart olarak aktiftir ve ek bir yapılandırma gerektirmez.
 
 ## Deploy (Render)
 
-Repo'daki `render.yaml` Blueprint'i, web servisini ve Redis-uyumlu bir Key
-Value servisini tek seferde kurar — kredi kartı istemeyen free plan. Render
-Dashboard'da **New +** → **Blueprint** → bu repoyu seçin.
+Repo'daki `render.yaml` Blueprint'i, web servisini ve Redis uyumlu bir Key
+Value servisini tek seferde kurar. Render Dashboard'da **New +** → **Blueprint** → bu repoyu seçin.

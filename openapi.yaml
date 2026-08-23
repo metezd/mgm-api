@@ -194,6 +194,61 @@ paths:
               schema:
                 $ref: "#/components/schemas/HataYaniti"
 
+  /toplu:
+    post:
+      tags: [hava-durumu]
+      summary: Tek istekte birden çok yer için hava durumu (akıllı toplu sorgu)
+      description: >
+        Her sorgu `/ara` ile aynı akıllı çözümleyiciyi kullanır "istanbul",
+        "kadikoy/istanbul", "maslak itü" gibi serbest metinler burada da
+        geçerlidir. Kısmi başarısızlığa toleranslıdır: bir sorgu
+        çözülemese bile diğerleri etkilenmez, yanıt her zaman `200`
+        döner ve her öğe kendi `basarili`/`hata` durumunu taşır. 
+        Sonuç dizisi istek sırasıyla birebir aynı sırada döner.
+
+        Batch boyutu sınırlıdıraksi halde tek bir isteğe çok sayıda sorgu sıkıştırmak, 
+        rate limit'i fiilen bypass etmenin bir yolu olurdu.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sorgular]
+              properties:
+                sorgular:
+                  type: array
+                  description: Boş olmayan, en fazla APP_TOPLU_MAX_SORGU (varsayılan 20) öğelik metin listesi.
+                  items: { type: string }
+                  example: ["istanbul", "kadikoy/istanbul", "maslak itü"]
+      responses:
+        "200":
+          description: Batch işlendi (öğelerin kendi başarı durumu ayrı ayrı taşınır)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sorgu: { type: string, example: "kadikoy/istanbul" }
+                        basarili: { type: boolean }
+                        veri:
+                          $ref: "#/components/schemas/AramaCozuldu"
+                        hata:
+                          type: string
+                          description: Yalnızca basarili=false iken bulunur.
+        "400":
+          description: "Gövde JSON değil, 'sorgular' eksik/boş/liste değil ya da limit aşıldı"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
   /istasyonlar/{il}:
     get:
       tags: [iller]

@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
@@ -84,6 +85,7 @@ mgm = MGMWeather(
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
+TOPLU_MAX_SORGU = int(os.getenv("APP_TOPLU_MAX_SORGU", "20"))
 RATE_LIMIT_BUCKETS = defaultdict(deque)
 
 
@@ -154,7 +156,7 @@ def rate_limit():
 @app.after_request
 def guvenlik_ve_cors_headerlari(response):
     response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
-    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -255,6 +257,67 @@ def konum():
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 502)
+
+
+@app.post("/toplu")
+def toplu():
+    """
+    Tek istekte birden çok yer için hava durumu — her sorgu, /ara ile
+    aynı akıllı çözümleyiciyi kullanır, yani "istanbul", "kadikoy/istanbul", 
+    "maslak itü" gibi serbest metinler burada da geçerlidir.
+
+    Kısmi başarısızlığa toleranslıdır: bir sorgu çözülemese bile diğerleri
+    etkilenmez — yanıt her zaman 200 döner (batch'in kendisi işlendi),
+    her öğe kendi basarili/hata durumunu taşır. Sonuç dizisi, istek
+    sırasıyla birebir aynı sırada döner
+
+    Batch boyutu TOPLU_MAX_SORGU ile sınırlıdır: aksi halde tek bir
+    isteğe çok sayıda sorgu sıkıştırmak, rate limit'i fiilen bypass
+    etmenin bir yolu olurdu
+    """
+    if not request.is_json:
+        return jsonify(
+            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
+        ), 400
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or "sorgular" not in body:
+        return jsonify(
+            {"basarili": False, "hata": "'sorgular' alanı zorunludur (bir dizi metin sorgusu)."}
+        ), 400
+
+    sorgular = body["sorgular"]
+    if not isinstance(sorgular, list) or not sorgular:
+        return jsonify(
+            {"basarili": False, "hata": "'sorgular' boş olmayan bir dizi olmalıdır."}
+        ), 400
+    if len(sorgular) > TOPLU_MAX_SORGU:
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": f"En fazla {TOPLU_MAX_SORGU} sorgu gönderebilirsiniz "
+                f"(gönderilen: {len(sorgular)}).",
+            }
+        ), 400
+    if not all(isinstance(s, str) and s.strip() for s in sorgular):
+        return jsonify(
+            {"basarili": False, "hata": "'sorgular' listesindeki her öğe boş olmayan bir metin olmalıdır."}
+        ), 400
+
+    def _tek_sorgu(sorgu: str) -> dict:
+        sorgu = sorgu.strip()
+        try:
+            veri = mgm.hava_durumu_akilli(sorgu)
+            return {"sorgu": sorgu, "basarili": True, "veri": veri}
+        except MGMWeatherError as exc:
+            return {"sorgu": sorgu, "basarili": False, "hata": str(exc)}
+
+    # MGMWeather client thread safe yapıdadır
+    # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi, 
+    # sıralı toplam yerine en yavaş tekil sorgu süresine indirgenir.
+    with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
+        sonuclar = list(havuz.map(_tek_sorgu, sorgular))
+
+    return jsonify({"basarili": True, "veri": sonuclar})
 
 
 @app.get("/istasyonlar/<il>")

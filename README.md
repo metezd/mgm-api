@@ -50,6 +50,10 @@ verisini geçirir.
 `/konum?lat=...&lon=...` GPS koordinatından önce MGM'yi
 dener, çalışmazsa Open-Meteo denenir
 
+`POST /toplu` tek istekte birden çok yer (`{"sorgular": ["istanbul",
+"kadikoy/istanbul"]}`) — `/ara` ile aynı akıllı çözümleyiciyi kullanır,
+kısmi başarısızlığa toleranslıdır, paralel işlenir.
+
 Türkçe karakter problemi olursa Türkçe karakter kullanmayın. Örn: (`Istanbul`, `Bakirkoy`)
 
 ## Daha fazlası

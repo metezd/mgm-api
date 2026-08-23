@@ -238,6 +238,60 @@ class TestAppIntegration(unittest.TestCase):
         self.assertEqual(resp.status_code, 502)
         self.assertFalse(resp.get_json()["basarili"])
 
+    def test_toplu_basarili_sorgular_dogru_sirada_doner(self):
+        resp = self.client.post("/toplu", json={"sorgular": ["istanbul", "izmir"]})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["basarili"])
+        self.assertEqual(len(data["veri"]), 2)
+        self.assertEqual(data["veri"][0]["sorgu"], "istanbul")
+        self.assertTrue(data["veri"][0]["basarili"])
+        self.assertEqual(data["veri"][1]["sorgu"], "izmir")
+
+    def test_toplu_kismi_basarisizlik_digerlerini_etkilemez(self):
+        resp = self.client.post(
+            "/toplu", json={"sorgular": ["istanbul", "bulunamayan sorgu", "ankara"]}
+        )
+        self.assertEqual(resp.status_code, 200)  # batch'in kendisi başarılı
+        veri = resp.get_json()["veri"]
+        self.assertEqual(len(veri), 3)
+        self.assertTrue(veri[0]["basarili"])
+        self.assertFalse(veri[1]["basarili"])
+        self.assertIn("hata", veri[1])
+        self.assertTrue(veri[2]["basarili"])
+
+    def test_toplu_json_olmayan_govde_400_doner(self):
+        resp = self.client.post("/toplu", data="ben json degilim")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_sorgular_alani_eksikse_400_doner(self):
+        resp = self.client.post("/toplu", json={})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_bos_liste_400_doner(self):
+        resp = self.client.post("/toplu", json={"sorgular": []})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_liste_degilse_400_doner(self):
+        resp = self.client.post("/toplu", json={"sorgular": "istanbul"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_bos_string_iceren_liste_400_doner(self):
+        resp = self.client.post("/toplu", json={"sorgular": ["istanbul", "  "]})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_limit_asilirsa_400_doner(self):
+        app_module.TOPLU_MAX_SORGU = 3
+        try:
+            resp = self.client.post("/toplu", json={"sorgular": ["a", "b", "c", "d"]})
+            self.assertEqual(resp.status_code, 400)
+        finally:
+            app_module.TOPLU_MAX_SORGU = 20
+
+    def test_toplu_cors_methods_headerinda_post_var(self):
+        resp = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
+        self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
+
     def test_openapi_yaml_gecerli_yaml_doner(self):
         resp = self.client.get("/openapi.yaml")
         self.assertEqual(resp.status_code, 200)
