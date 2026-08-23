@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
@@ -86,6 +87,19 @@ CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
 TOPLU_MAX_SORGU = int(os.getenv("APP_TOPLU_MAX_SORGU", "20"))
+
+HTTP_ISTEK_SAYAC = Counter(
+    "http_requests_total", "Toplam HTTP isteği", ["method", "endpoint", "status"]
+)
+HTTP_ISTEK_SURESI = Histogram(
+    "http_request_duration_seconds", "İstek süresi (saniye)", ["method", "endpoint"]
+)
+RATE_LIMIT_RED_SAYAC = Counter(
+    "mgm_rate_limit_rejected_total", "429 ile reddedilen istek sayısı"
+)
+CIRCUIT_BREAKER_DURUM_GAUGE = Gauge(
+    "mgm_circuit_breaker_state", "0=kapali 1=yari-acik 2=acik (scrape anında okunur)"
+)
 RATE_LIMIT_BUCKETS = defaultdict(deque)
 
 
@@ -118,10 +132,15 @@ def _istasyon_ve_konum_getir(
 
 
 @app.before_request
+def istek_zamanlayici():
+    g.metrik_baslangic = time.monotonic()
+
+
+@app.before_request
 def rate_limit():
     if request.method == "OPTIONS":
         return None
-    if request.path in {"/health", "/docs", "/openapi.yaml"}:
+    if request.path in {"/health", "/docs", "/openapi.yaml", "/metrics"}:
         return None
 
     ip = request.remote_addr or "unknown"
@@ -141,6 +160,7 @@ def rate_limit():
 
     if len(bucket) >= limit:
         g.rl_remaining = 0
+        RATE_LIMIT_RED_SAYAC.inc()
         retry_after = max(1, window_seconds)
         response = jsonify({
             "basarili": False,
@@ -169,6 +189,30 @@ def guvenlik_ve_cors_headerlari(response):
         response.headers["X-RateLimit-Remaining"] = str(g.rl_remaining)
         response.headers["X-RateLimit-Reset"] = str(g.rl_reset_epoch)
     return response
+
+
+@app.after_request
+def metrik_kaydet(response):
+    endpoint = request.endpoint or "eslesmedi"  # 404 gibi durumlarda route yok
+    HTTP_ISTEK_SAYAC.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code
+    ).inc()
+    baslangic = getattr(g, "metrik_baslangic", None)
+    if baslangic is not None:
+        HTTP_ISTEK_SURESI.labels(method=request.method, endpoint=endpoint).observe(
+            time.monotonic() - baslangic
+        )
+    return response
+
+
+@app.get("/metrics")
+def metrics():
+    CIRCUIT_BREAKER_DURUM_GAUGE.set(
+        {"kapali": 0, "yari-acik": 1, "acik": 2}.get(
+            mgm.circuit_breaker_saglik_ozeti()["durum"], -1
+        )
+    )
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 @app.get("/openapi.yaml")

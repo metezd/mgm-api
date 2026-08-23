@@ -30,6 +30,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+from prometheus_client import Counter
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -53,6 +54,15 @@ _VALUE_KEY = "_value"
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
 CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
 CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
+
+# Prometheus metrikleri modül seviyesinde tanımlı, global default
+# registry'de yaşıyor. app.py'deki /metrics endpoint'i generate_latest
+# çağırdığında bunlar otomatik dahil olur
+CACHE_SONUC_SAYAC = Counter(
+    "mgm_cache_result_total",
+    "Cache sorgu sonucu (hit: taze, stale_hit: bayat ama sunuldu, miss: hiç yok)",
+    ["sonuc"],
+)
 
 
 @dataclass
@@ -471,14 +481,17 @@ class MGMWeather:
             yas = time.time() - yazilma_zamani
             if yas <= ttl:
                 logger.info("Cache hit (taze): %s", key)
+                CACHE_SONUC_SAYAC.labels(sonuc="hit").inc()
                 return payload
             if self._swr_aktif() and yas <= ttl + self.stale_while_revalidate_seconds:
                 logger.info("Cache hit (stale, arka planda yenileniyor): %s", key)
+                CACHE_SONUC_SAYAC.labels(sonuc="stale_hit").inc()
                 if self._renew_try_lock(key):
                     self._arka_planda_yenile(key, loader)
                 return payload
 
         logger.info("Cache miss: %s", key)
+        CACHE_SONUC_SAYAC.labels(sonuc="miss").inc()
         return self._yukle_singleton(key, loader)
 
     def _swr_aktif(self) -> bool:

@@ -5,7 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from mgm_client import MGMCircuitOpenError, MGMWeather, MGMWeatherError, _tr_normalize, turkiye_illeri
+from mgm_client import (
+    CACHE_SONUC_SAYAC,
+    MGMCircuitOpenError,
+    MGMWeather,
+    MGMWeatherError,
+    _tr_normalize,
+    turkiye_illeri,
+)
 
 
 class _DummyResponse:
@@ -1243,6 +1250,51 @@ class TestKonumCozumleyici(unittest.TestCase):
         client2.session = session
         client2._nominatim_ters_geocode(42.0, 30.0)
         self.assertTrue(any(h and "User-Agent" in h for h in cagrilar))
+
+
+class TestPrometheusMetrikleri(unittest.TestCase):
+    """_cached_get()'in hit/stale_hit/miss dallarının Prometheus
+    sayacını (CACHE_SONUC_SAYAC) doğru artırdığını doğrular. Sayaç
+    modül seviyesinde global registry'de yaşadığı için testler arası
+    sızıntıyı önlemek adına her testte önce/sonra farkına bakılır,
+    mutlak değere değil."""
+
+    @staticmethod
+    def _sayac(etiket: str) -> float:
+        return CACHE_SONUC_SAYAC.labels(sonuc=etiket)._value.get()
+
+    def test_ilk_cagri_miss_ikinci_cagri_hit_artirir(self):
+        session = _CountingSession([{"il": "Ankara"}])
+        client = MGMWeather(cache_ttl_seconds=60, timeout=1, retry_total=0)
+        client.session = session
+
+        miss_once = self._sayac("miss")
+        hit_once = self._sayac("hit")
+
+        client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(self._sayac("miss"), miss_once + 1)
+        self.assertEqual(self._sayac("hit"), hit_once)
+
+        client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(self._sayac("miss"), miss_once + 1)  # değişmedi
+        self.assertEqual(self._sayac("hit"), hit_once + 1)
+
+    def test_stale_pencerede_stale_hit_artirir(self):
+        session = _CountingSession([{"il": "Ankara"}])
+        client = MGMWeather(
+            cache_ttl_seconds=1,
+            stale_while_revalidate_seconds=60,
+            timeout=1,
+            retry_total=0,
+        )
+        client.session = session
+
+        client._get("merkezler", {"il": "ankara"})  # miss + yaz
+        time.sleep(1.2)  # ttl geçsin, stale pencereye düşsün
+
+        stale_once = self._sayac("stale_hit")
+        client._get("merkezler", {"il": "ankara"})
+        self.assertEqual(self._sayac("stale_hit"), stale_once + 1)
 
 
 if __name__ == "__main__":

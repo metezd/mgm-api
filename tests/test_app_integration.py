@@ -292,6 +292,31 @@ class TestAppIntegration(unittest.TestCase):
         resp = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
         self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
 
+    def test_metrics_200_ve_prometheus_formatinda(self):
+        resp = self.client.get("/metrics")
+        self.assertEqual(resp.status_code, 200)
+        gövde = resp.get_data(as_text=True)
+        self.assertIn("http_requests_total", gövde)
+        self.assertIn("mgm_circuit_breaker_state", gövde)
+
+    def test_metrics_rate_limite_tabi_degil(self):
+        app_module.RATE_LIMIT_MAX = 1
+        app_module.RATE_LIMIT_BUCKETS.clear()
+        try:
+            for _ in range(5):
+                self.assertEqual(self.client.get("/metrics").status_code, 200)
+        finally:
+            app_module.RATE_LIMIT_MAX = 60
+            app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_metrics_gecmis_istekleri_sayar(self):
+        self.client.get("/iller")
+        self.client.get("/iller")
+        gövde = self.client.get("/metrics").get_data(as_text=True)
+        self.assertRegex(
+            gövde, r'http_requests_total\{endpoint="iller",method="GET",status="200"\} \d+\.0'
+        )
+
     def test_openapi_yaml_gecerli_yaml_doner(self):
         resp = self.client.get("/openapi.yaml")
         self.assertEqual(resp.status_code, 200)

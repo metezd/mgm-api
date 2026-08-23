@@ -57,7 +57,17 @@ API tarafından döndürülen her HTTP yanıtı, istemciyi bilgilendirmek amacı
 
 ## Response Compression
 
-İstemci tarafından HTTP isteklerinde `Accept-Encoding: gzip` başlığı iletildiğinde; JSON, HTML ve YAML formatındaki yanıtlar `Flask-Compress` eklentisi kullanılarak otomatik olarak sıkıştırılır. Bu optimizasyon standart olarak aktiftir ve ek bir yapılandırma gerektirmez.
+İstemci tarafından HTTP isteklerinde `Accept-Encoding: gzip` başlığı iletildiğinde; JSON, HTML ve YAML formatındaki yanıtlar `Flask-Compress` eklentisi kullanılarak otomatik olarak sıkıştırılır. Bu optimizasyon standart olarak aktiftir ve ek bir yapılandırma gerektirmez. `br` (Brotli) da desteklenir `Accept-Encoding` içinde `br` geçen istemciler otomatik brotli alır
+
+## Gözlemlenebilirlik (Prometheus metrikleri)
+
+`GET /metrics`, Prometheus text formatında metrik döner. Rate limitten muaf, `/health` gibi.
+
+- `http_requests_total{method,endpoint,status}` — endpoint bazlı istek sayacı. Etiket olarak ham path değil Flask'ın eşleştirdiği route adı (`request.endpoint`, ör. `guncel`) kullanılır `/guncel/<il>` gibi path'lerde `il` değerini etikete koymak sınırsız kardinaliteye (her farklı il için ayrı zaman serisi) yol açardı.
+- `http_request_duration_seconds{method,endpoint}` histogram, aynı etiketleme mantığıyla.
+- `mgm_cache_result_total{sonuc}` `hit`/`stale_hit`/`miss` sayaçları (`mgm_client.py`, `_cached_get()` içinde artırılır).
+- `mgm_circuit_breaker_state` 0=kapalı, 1=yarı-açık, 2=açık; her scrape'te `mgm.circuit_breaker_saglik_ozeti()`'nden okunur.
+- `mgm_rate_limit_rejected_total` 429 ile reddedilen istek sayısı.
 
 ## Deploy (Render)
 

@@ -398,6 +398,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/SaglikDurumu"
 
+  /metrics:
+    get:
+      tags: [durum]
+      summary: Prometheus formatında metrikler
+      description: >
+        HTTP istek sayısı/süresi, cache hit/stale_hit/miss
+        oranı, circuit breaker durumu, rate limit reddi sayısı
+        rate limite tabi değildir. OpenTelemetry/trace
+        desteği bilinçli olarak eklenmedi
+      responses:
+        "200":
+          description: Prometheus text formatı
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  http_requests_total{method="GET",endpoint="iller",status="200"} 3.0
+                  mgm_circuit_breaker_state 0.0
+
 components:
   parameters:
     IlPath:

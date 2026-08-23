@@ -51,8 +51,11 @@ verisini geçirir.
 dener, çalışmazsa Open-Meteo denenir
 
 `POST /toplu` tek istekte birden çok yer (`{"sorgular": ["istanbul",
-"kadikoy/istanbul"]}`) — `/ara` ile aynı akıllı çözümleyiciyi kullanır,
+"kadikoy/istanbul"]}`) `/ara` ile aynı akıllı çözümleyiciyi kullanır,
 kısmi başarısızlığa toleranslıdır, paralel işlenir.
+
+`GET /metrics` Prometheus formatında metrik. HTTP istek sayısı/süresi,
+cache hit/miss/stale oranı, circuit breaker durumu.
 
 Türkçe karakter problemi olursa Türkçe karakter kullanmayın. Örn: (`Istanbul`, `Bakirkoy`)
 
