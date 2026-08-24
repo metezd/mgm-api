@@ -32,6 +32,12 @@ Uç noktalar:
            (sunrise-sunset.org) ve ay evresi. /hava-durumu yanıtına da
            "ayEvresi" alanı olarak otomatik eklenir.
 
+    GET /map/geojson
+        -> Türkiye il sınırları (GeoJSON) + MGM son durum sıcaklıkları
+           birleştirilmiş, doğrudan Leaflet/Mapbox'a beslenebilecek
+           tek bir FeatureCollection. Yanıt "basarili" sarmalayıcısı
+           OLMADAN saf GeoJSON olarak döner
+
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
@@ -93,6 +99,12 @@ mgm = MGMWeather(
     hava_kalitesi_ttl_saniye=int(os.getenv("MGM_HAVA_KALITESI_TTL_SANIYE", "600")),
     ibb_istasyon_ttl_saniye=int(os.getenv("MGM_IBB_ISTASYON_TTL_SANIYE", "21600")),
     ibb_max_mesafe_km=float(os.getenv("MGM_IBB_MAX_MESAFE_KM", "40")),
+    geojson_sinir_ttl_saniye=int(
+        os.getenv("MGM_GEOJSON_SINIR_TTL_SANIYE", str(30 * 24 * 3600))
+    ),
+    harita_sicaklik_ttl_saniye=int(
+        os.getenv("MGM_HARITA_SICAKLIK_TTL_SANIYE", "600")
+    ),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )
@@ -523,6 +535,20 @@ def gun_ay_bilgisi(il: str):
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)
+
+
+@app.get("/map/geojson")
+def map_geojson():
+    """
+    İl sınırları GeoJSON'u + MGM son durum sıcaklıklarını tek bir
+    FeatureCollection'da birleştirip döner. Doğrudan Leaflet/Mapbox gibi
+    harita kütüphanelerine beslenebilir
+    """
+    try:
+        veri = mgm.harita_geojson()
+        return jsonify(veri)
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
 
 
 @app.errorhandler(404)

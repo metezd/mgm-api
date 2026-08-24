@@ -20,6 +20,8 @@ tags:
     description: Güncel durum, tahmin, birleşik özet
   - name: uyarilar
     description: Meteorolojik uyarılar (deneysel, ham geçiş)
+  - name: harita
+    description: GeoJSON harita verisi (Leaflet/Mapbox uyumlu)
   - name: durum
     description: Servis sağlığı
 
@@ -344,6 +346,30 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /map/geojson:
+    get:
+      tags: [harita]
+      summary: İl sınırları GeoJSON + son durum sıcaklıkları
+      description: >
+        Türkiye'nin 81 il sınırını (GeoJSON, açık kaynak/OSM türevi) MGM
+        son durum sıcaklıklarıyla birleştirip tek bir FeatureCollection
+        olarak döner.
+        "200":
+          description: GeoJSON FeatureCollection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HaritaGeoJSON"
+        "502":
+          description: Sınır verisi kaynağına ulaşılamadı
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: false }
+                  hata: { type: string }
+
   /tahmin/{il}:
     get:
       tags: [hava-durumu]
@@ -631,6 +657,35 @@ components:
             pm25: { type: string, enum: [open-meteo] }
             no2: { type: string, enum: [ibb, open-meteo] }
             uvIndeksi: { type: string, enum: [open-meteo] }
+
+    HaritaGeoJSON:
+      type: object
+      description: RFC 7946 FeatureCollection; Leaflet/Mapbox'a doğrudan verilebilir.
+      properties:
+        type: { type: string, enum: [FeatureCollection] }
+        features:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, enum: [Feature] }
+              geometry:
+                type: object
+                description: Polygon veya MultiPolygon (GeoJSON standardı)
+              properties:
+                type: object
+                properties:
+                  il: { type: string, example: "İstanbul" }
+                  sicaklik:
+                    type: number
+                    nullable: true
+                    description: Son durum sıcaklığı (°C); bulunamazsa null
+                    example: 24.3
+                  durum:
+                    type: string
+                    nullable: true
+                    example: "Az Bulutlu"
+                  guncellemeZamani: { type: string, nullable: true }
 
     GunAyBilgisi:
       type: object
