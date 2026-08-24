@@ -22,6 +22,7 @@ import datetime as _dt
 import difflib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -349,6 +350,9 @@ class MGMWeather:
     guncel_gece_ttl_saniye: int = 3600
     # gunluk_tahmin/saatlik_tahmin, guncel_durum'dan ayrı ve daha uzun bir TTL kullanır
     tahmin_ttl_saniye: int = 10800
+    hava_kalitesi_ttl_saniye: int = 600
+    ibb_istasyon_ttl_saniye: int = 21600
+    ibb_max_mesafe_km: float = 40.0
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
@@ -369,8 +373,20 @@ class MGMWeather:
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
     OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
     OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+    OPEN_METEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
     NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
     NOMINATIM_USER_AGENT = "mgm-hava-durumu-api/1.0 (https://github.com/metezd/hava-durumu)"
+    # İBB Açık Veri Portalı — Çevre Koruma ve Kontrol Dairesi Başkanlığı
+    # hava kalitesi web servisleri (resmi, dokümante edilmiş; bkz.
+    # data.ibb.gov.tr "Hava Kalitesi İstasyon Bilgileri/Ölçüm Sonuçları
+    # Web Servisi"). Yalnızca İstanbul'u kapsar ve PM2.5 döndürmez —
+    # bu yüzden PM2.5 ve UV indeksi her zaman Open-Meteo'dan tamamlanır.
+    IBB_HAVA_KALITESI_ISTASYONLAR_URL = (
+        "https://api.ibb.gov.tr/havakalitesi/OpenDataPortalHandler/GetAQIStations"
+    )
+    IBB_HAVA_KALITESI_OLCUM_URL = (
+        "https://api.ibb.gov.tr/havakalitesi/OpenDataPortalHandler/GetAQIByStationId"
+    )
 
     HEADERS = {
         "Host": "servis.mgm.gov.tr",
@@ -1040,6 +1056,257 @@ class MGMWeather:
             veri["istasyonId"] = istasyon_id
             veri["kaynak"] = "open-meteo"
             return veri
+
+    @staticmethod
+    def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """İki koordinat arası büyük daire mesafesi. En yakın İBB
+        istasyonunu bulmak için kullanılır."""
+        yaricap = 6371.0088
+        f1, f2 = math.radians(lat1), math.radians(lat2)
+        dfi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+        a = (
+            math.sin(dfi / 2) ** 2
+            + math.cos(f1) * math.cos(f2) * math.sin(dlambda / 2) ** 2
+        )
+        return 2 * yaricap * math.asin(math.sqrt(a))
+
+    def _ibb_istasyonlari(self) -> list[dict[str, Any]]:
+        """İBB hava kalitesi istasyon listesini getirir ve uzun süre cacheler.
+        """
+        cache_key = self._cache_key("ibb-hk-istasyonlar")
+
+        def loader() -> list[dict[str, Any]]:
+            try:
+                resp = self.session.get(
+                    self.IBB_HAVA_KALITESI_ISTASYONLAR_URL, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                ham = resp.json()
+            except (requests.RequestException, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"İBB hava kalitesi istasyon listesi alınamadı: {exc}"
+                ) from exc
+
+            istasyonlar: list[dict[str, Any]] = []
+            for kayit in ham if isinstance(ham, list) else []:
+                konum = str(kayit.get("Location") or "")
+                parcalar = [p.strip() for p in konum.split(",")]
+                if len(parcalar) != 2:
+                    continue
+                try:
+                    enlem, boylam = float(parcalar[0]), float(parcalar[1])
+                except ValueError:
+                    continue
+                istasyonlar.append(
+                    {
+                        "id": kayit.get("Id"),
+                        "ad": kayit.get("Name"),
+                        "adres": kayit.get("Adress") or kayit.get("Address"),
+                        "enlem": enlem,
+                        "boylam": boylam,
+                    }
+                )
+            if not istasyonlar:
+                raise MGMWeatherError(
+                    "İBB hava kalitesi istasyon listesi boş ya da beklenmeyen "
+                    "formatta döndü."
+                )
+            return istasyonlar
+
+        return self._cached_get(
+            cache_key, loader, ttl_override=self.ibb_istasyon_ttl_saniye
+        )
+
+    def _ibb_en_yakin_istasyon(
+        self, enlem: float, boylam: float
+    ) -> dict[str, Any] | None:
+        """Verilen koordinata en yakın İBB istasyonunu döner; en yakını
+        `ibb_max_mesafe_km`'den uzaksa (İstanbul dışı) None döner."""
+        istasyonlar = self._ibb_istasyonlari()
+        en_yakin = min(
+            istasyonlar,
+            key=lambda s: self._haversine_km(enlem, boylam, s["enlem"], s["boylam"]),
+        )
+        mesafe = self._haversine_km(
+            enlem, boylam, en_yakin["enlem"], en_yakin["boylam"]
+        )
+        if mesafe > self.ibb_max_mesafe_km:
+            return None
+        return en_yakin
+
+    @staticmethod
+    def _sozlukten_kirletici_deger(veri: dict[str, Any], *adaylar: str) -> float | None:
+        """İBB'nin Concentration/AQI nesnelerindeki alan adı casing'i resmi
+        dokümanda net belirtilmediğinden, olası varyasyonları (PM10, Pm10,
+        pm10 vb.) büyük/küçük harf duyarsız arar."""
+        kucuk_harfli = {str(k).lower(): v for k, v in veri.items()}
+        for aday in adaylar:
+            if aday.lower() in kucuk_harfli:
+                try:
+                    return float(kucuk_harfli[aday.lower()])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _ibb_olcum(self, istasyon_id: str) -> dict[str, Any]:
+        """Verilen İBB istasyon id'si için en güncel PM10/NO2 ölçümünü döner.
+
+        Not: bu servisin tam JSON şeması resmi dokümanda örnek yanıt olarak
+        verilmemiştir. bu yöntem hem liste hem tekil kayıt biçimini kabul
+        eder ve alan adlarını harf duyarsız arar. Servis yanıtı beklenmedik
+        şekilde değişirse MGMWeatherError fırlatılır ve çağıran taraf
+        `hava_kalitesi` Open-Meteo'ya düşer.
+        """
+        simdi = _dt.datetime.now()
+        baslangic = simdi - _dt.timedelta(hours=3)
+        params = {
+            "StationId": istasyon_id,
+            "StartDate": baslangic.strftime("%d.%m.%Y %H:%M:%S"),
+            "EndDate": simdi.strftime("%d.%m.%Y %H:%M:%S"),
+        }
+        cache_key = self._cache_key("ibb-hk-olcum", params)
+
+        def loader() -> dict[str, Any]:
+            try:
+                resp = self.session.get(
+                    self.IBB_HAVA_KALITESI_OLCUM_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                ham = resp.json()
+            except (requests.RequestException, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"İBB hava kalitesi ölçüm servisinden veri alınamadı: {exc}"
+                ) from exc
+
+            kayitlar = ham if isinstance(ham, list) else [ham] if isinstance(ham, dict) else []
+            if not kayitlar:
+                raise MGMWeatherError(
+                    f"İBB istasyon {istasyon_id} için ölçüm kaydı bulunamadı."
+                )
+
+            def _zaman(kayit: dict[str, Any]) -> str:
+                return str(kayit.get("ReadTime") or "")
+
+            en_guncel = max(kayitlar, key=_zaman)
+            konsantrasyon = en_guncel.get("Concentration") or {}
+            aqi = en_guncel.get("AQI") or {}
+            if not isinstance(konsantrasyon, dict):
+                konsantrasyon = {}
+            if not isinstance(aqi, dict):
+                aqi = {}
+
+            pm10 = self._sozlukten_kirletici_deger(konsantrasyon, "PM10")
+            no2 = self._sozlukten_kirletici_deger(konsantrasyon, "NO2", "NO_2")
+            if pm10 is None and no2 is None:
+                raise MGMWeatherError(
+                    f"İBB istasyon {istasyon_id} yanıtında beklenen kirletici "
+                    "alanları bulunamadı."
+                )
+            return {
+                "pm10": pm10,
+                "no2": no2,
+                "so2": self._sozlukten_kirletici_deger(konsantrasyon, "SO2"),
+                "o3": self._sozlukten_kirletici_deger(konsantrasyon, "O3"),
+                "co": self._sozlukten_kirletici_deger(konsantrasyon, "CO"),
+                "hki": self._sozlukten_kirletici_deger(aqi, "AQI", "HKI"),
+                "olcumZamani": en_guncel.get("ReadTime"),
+            }
+
+        return self._cached_get(
+            cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
+        )
+
+    def _open_meteo_hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """Open-Meteo Air Quality API'sinden (key gerektirmez, CAMS verisine
+        dayanır) anlık PM10, PM2.5, NO2 ve UV indeksini döner. İBB'nin
+        kapsamadığı bölgeler için tam fallback, İstanbul için ise PM2.5 ve
+        UV indeksinin tamamlayıcı kaynağıdır
+        """
+        params = {
+            "latitude": enlem,
+            "longitude": boylam,
+            "current": "pm10,pm2_5,nitrogen_dioxide,uv_index,european_aqi",
+            "timezone": "Europe/Istanbul",
+        }
+        cache_key = self._cache_key("open-meteo-hava-kalitesi", params)
+
+        def loader() -> dict[str, Any]:
+            try:
+                resp = self.session.get(
+                    self.OPEN_METEO_AIR_QUALITY_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                veri = resp.json()["current"]
+            except (requests.RequestException, KeyError, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Open-Meteo hava kalitesi servisinden veri alınamadı: {exc}"
+                ) from exc
+
+            return {
+                "pm10": veri.get("pm10"),
+                "pm25": veri.get("pm2_5"),
+                "no2": veri.get("nitrogen_dioxide"),
+                "uvIndeksi": veri.get("uv_index"),
+                "avrupaHKI": veri.get("european_aqi"),
+                "olcumZamani": veri.get("time"),
+            }
+
+        return self._cached_get(
+            cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
+        )
+
+    def hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
+
+        Öncelik İBB'nin resmi hava kalitesi ölçüm ağındadır (yalnızca
+        İstanbul'u, `ibb_max_mesafe_km` yarıçapında kapsar) PM2.5 ve UV
+        indeksi İBB servisinde bulunmadığından her zaman Open-Meteo Air
+        Quality API'siyle tamamlanır. İBB'ye hiç ulaşılamazsa
+        tüm alanlar Open Meteo'dan gelir. Döndürülen sözlükte her zaman
+        `kaynaklar` alanı bulunur: hangi alanın hangi servisten geldiğini
+        gösterir (örn. {"pm10": "ibb", "pm25": "open-meteo", ...})
+        """
+        acik_meteo = self._open_meteo_hava_kalitesi(enlem, boylam)
+        sonuc: dict[str, Any] = {
+            "pm10": acik_meteo["pm10"],
+            "pm25": acik_meteo["pm25"],
+            "no2": acik_meteo["no2"],
+            "uvIndeksi": acik_meteo["uvIndeksi"],
+            "avrupaHKI": acik_meteo["avrupaHKI"],
+            "olcumZamani": acik_meteo["olcumZamani"],
+            "istasyon": None,
+            "kaynaklar": {
+                "pm10": "open-meteo",
+                "pm25": "open-meteo",
+                "no2": "open-meteo",
+                "uvIndeksi": "open-meteo",
+            },
+        }
+
+        try:
+            istasyon = self._ibb_en_yakin_istasyon(enlem, boylam)
+            if istasyon is None:
+                return sonuc
+            ibb_olcum = self._ibb_olcum(istasyon["id"])
+        except MGMWeatherError as exc:
+            logger.warning("İBB hava kalitesi alınamadı, Open-Meteo kullanılıyor: %s", exc)
+            return sonuc
+
+        if ibb_olcum.get("pm10") is not None:
+            sonuc["pm10"] = ibb_olcum["pm10"]
+            sonuc["kaynaklar"]["pm10"] = "ibb"
+            sonuc["olcumZamani"] = ibb_olcum.get("olcumZamani") or sonuc["olcumZamani"]
+        if ibb_olcum.get("no2") is not None:
+            sonuc["no2"] = ibb_olcum["no2"]
+            sonuc["kaynaklar"]["no2"] = "ibb"
+        sonuc["istasyon"] = {
+            "ad": istasyon["ad"],
+            "adres": istasyon["adres"],
+            "enlem": istasyon["enlem"],
+            "boylam": istasyon["boylam"],
+        }
+        return sonuc
 
     # Günlük tahmin (5 günlük)
     def _tahmin_ttl(self) -> float:

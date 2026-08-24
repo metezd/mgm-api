@@ -50,6 +50,11 @@ verisini geçirir.
 `/konum?lat=...&lon=...` GPS koordinatından önce MGM'yi
 dener, çalışmazsa Open-Meteo denenir
 
+`/hava-kalitesi/<il>?ilce=<ilce>` Anlık UV indeksi ve hava kalitesi
+(PM10, PM2.5, NO2) İstanbul için öncelik İBB'nin ölçüm ağıdır.
+PM2.5/UV indeksi ve İBB'nin kapsamadığı iller Open-Meteo Air Quality
+API'sinden gelir
+
 `POST /toplu` tek istekte birden çok yer (`{"sorgular": ["istanbul",
 "kadikoy/istanbul"]}`) `/ara` ile aynı akıllı çözümleyiciyi kullanır,
 kısmi başarısızlığa toleranslıdır, paralel işlenir.

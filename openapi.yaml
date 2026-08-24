@@ -292,6 +292,33 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /hava-kalitesi/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2)
+      description: >
+        Öncelik İBB'nin resmi hava kalitesi ölçüm ağındadır (yalnızca
+        İstanbul'u kapsar); PM2.5 ve UV indeksi bu serviste bulunmadığından
+        her zaman Open-Meteo Air Quality API'siyle tamamlanır. İBB'ye hiç
+        ulaşılamazsa (İstanbul dışı il, istasyon/servis hatası vb.) tüm
+        alanlar Open-Meteo'dan gelir.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Hava kalitesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/HavaKalitesi"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
   /tahmin/{il}:
     get:
       tags: [hava-durumu]
@@ -541,6 +568,40 @@ components:
                 karşılığı yok (ör. resmi ilçe olmayan bir mahalle),
                 `guncel` doğrudan Open-Meteo'dan; `tahmin` boş liste.
               example: geocoding-dogrudan
+
+    HavaKalitesi:
+      type: object
+      description: >
+        Her alanın hangi servisten geldiği `kaynaklar` içinde ayrı ayrı
+        belirtilir, çünkü İBB ve Open-Meteo aynı yanıtta karışık kullanılabilir.
+      properties:
+        pm10: { type: number, nullable: true, example: 34.2 }
+        pm25: { type: number, nullable: true, example: 14.4 }
+        no2: { type: number, nullable: true, example: 21.7 }
+        uvIndeksi: { type: number, nullable: true, example: 6.2 }
+        avrupaHKI:
+          type: integer
+          nullable: true
+          description: Open-Meteo Avrupa Hava Kalitesi İndeksi (0-100+)
+          example: 38
+        olcumZamani: { type: string, nullable: true, example: "2026-08-24T09:00:00" }
+        istasyon:
+          type: object
+          nullable: true
+          description: PM10/NO2 için kullanılan İBB istasyonu; İBB devrede değilse null
+          properties:
+            ad: { type: string, example: Kadıköy }
+            adres: { type: string, nullable: true, example: "Kadıköy/İstanbul" }
+            enlem: { type: number, example: 40.9906 }
+            boylam: { type: number, example: 29.0274 }
+        kaynaklar:
+          type: object
+          description: "Her alan için: ibb | open-meteo"
+          properties:
+            pm10: { type: string, enum: [ibb, open-meteo] }
+            pm25: { type: string, enum: [open-meteo] }
+            no2: { type: string, enum: [ibb, open-meteo] }
+            uvIndeksi: { type: string, enum: [open-meteo] }
 
     KonumCozuldu:
       allOf:

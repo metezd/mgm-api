@@ -22,6 +22,11 @@ Uç noktalar:
     GET /hava-durumu/<il>?ilce=<ilce>
         -> Güncel durum + tahmin + gün doğumu ve batımı
 
+    GET /hava-kalitesi/<il>?ilce=<ilce>
+        -> Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2).
+           İstanbul için öncelik İBB'nin resmi ölçüm ağındadır,
+           PM2.5/UV ve İBB'nin kapsamadığı yerler Open-Meteo'dan gelir.
+
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
@@ -80,6 +85,9 @@ mgm = MGMWeather(
     guncel_gece_bitis_saat=int(os.getenv("MGM_GUNCEL_GECE_BITIS_SAAT", "6")),
     guncel_gece_ttl_saniye=int(os.getenv("MGM_GUNCEL_GECE_TTL_SANIYE", "3600")),
     tahmin_ttl_saniye=int(os.getenv("MGM_TAHMIN_TTL_SANIYE", "10800")),
+    hava_kalitesi_ttl_saniye=int(os.getenv("MGM_HAVA_KALITESI_TTL_SANIYE", "600")),
+    ibb_istasyon_ttl_saniye=int(os.getenv("MGM_IBB_ISTASYON_TTL_SANIYE", "21600")),
+    ibb_max_mesafe_km=float(os.getenv("MGM_IBB_MAX_MESAFE_KM", "40")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )
@@ -473,6 +481,22 @@ def hava_durumu(il: str):
     ilce = request.args.get("ilce")
     try:
         veri = mgm.hava_durumu(il, ilce)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
+@app.get("/hava-kalitesi/<il>")
+def hava_kalitesi(il: str):
+    ilce = request.args.get("ilce")
+    try:
+        _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+        if enlem is None or boylam is None:
+            raise MGMWeatherError(
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                "hava kalitesi koordinat gerektirir."
+            )
+        veri = mgm.hava_kalitesi(float(enlem), float(boylam))
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)
