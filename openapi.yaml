@@ -319,6 +319,31 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /gun-ay-bilgisi/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Gün doğumu, gün batımı ve ay evresi
+      description: >
+        Verilen il/ilçenin koordinatı için gün doğumu/batımı
+        ve ay evresi döner. Aynı bilgi /hava-durumu
+        yanıtına da "ayEvresi" alanı olarak otomatik eklenir.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Gün ve ay bilgisi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/GunAyBilgisi"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
   /tahmin/{il}:
     get:
       tags: [hava-durumu]
@@ -550,6 +575,10 @@ components:
           items: { $ref: "#/components/schemas/GunlukTahmin" }
         gunDogumu: { type: string, nullable: true, example: "06:12" }
         gunBatimi: { type: string, nullable: true, example: "19:48" }
+        ayEvresi:
+          allOf:
+            - $ref: "#/components/schemas/GunAyBilgisi/properties/ayEvresi"
+          nullable: true
 
     AramaCozuldu:
       allOf:
@@ -602,6 +631,39 @@ components:
             pm25: { type: string, enum: [open-meteo] }
             no2: { type: string, enum: [ibb, open-meteo] }
             uvIndeksi: { type: string, enum: [open-meteo] }
+
+    GunAyBilgisi:
+      type: object
+      properties:
+        gunDogumu: { type: string, example: "06:12" }
+        gunBatimi: { type: string, example: "19:47" }
+        ayEvresi:
+          type: object
+          properties:
+            evreAdi:
+              type: string
+              enum:
+                - Yeni Ay
+                - "Hilal (Büyüyen)"
+                - İlk Dördün
+                - "Şişkin Ay (Büyüyen)"
+                - Dolunay
+                - "Şişkin Ay (Küçülen)"
+                - Son Dördün
+                - "Hilal (Küçülen)"
+              example: "Şişkin Ay (Büyüyen)"
+            yasGunu:
+              type: number
+              description: Son yeni aydan bu yana geçen gün (0-29.53)
+              example: 11.18
+            aydinlanmaOrani:
+              type: number
+              description: Görünen ay diskinin aydınlık oranı (0-1)
+              example: 0.62
+            buyuyorMu:
+              type: boolean
+              description: Bir sonraki dolunaya doğru mu ilerliyor
+              example: true
 
     KonumCozuldu:
       allOf:

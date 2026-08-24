@@ -27,6 +27,11 @@ Uç noktalar:
            İstanbul için öncelik İBB'nin resmi ölçüm ağındadır,
            PM2.5/UV ve İBB'nin kapsamadığı yerler Open-Meteo'dan gelir.
 
+    GET /gun-ay-bilgisi/<il>?ilce=<ilce>
+        -> Verilen il/ilçe (koordinat) için gün doğumu, gün batımı
+           (sunrise-sunset.org) ve ay evresi. /hava-durumu yanıtına da
+           "ayEvresi" alanı olarak otomatik eklenir.
+
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
@@ -497,6 +502,24 @@ def hava_kalitesi(il: str):
                 "hava kalitesi koordinat gerektirir."
             )
         veri = mgm.hava_kalitesi(float(enlem), float(boylam))
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
+@app.get("/gun-ay-bilgisi/<il>")
+def gun_ay_bilgisi(il: str):
+    ilce = request.args.get("ilce")
+    try:
+        _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+        if enlem is None or boylam is None:
+            raise MGMWeatherError(
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                "gün doğumu/batımı koordinat gerektirir."
+            )
+        veri: dict = {}
+        veri.update(mgm.gun_dogumu_batimi(float(enlem), float(boylam)))
+        veri["ayEvresi"] = mgm.ay_evresi()
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)

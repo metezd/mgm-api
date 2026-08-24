@@ -55,6 +55,10 @@ dener, çalışmazsa Open-Meteo denenir
 PM2.5/UV indeksi ve İBB'nin kapsamadığı iller Open-Meteo Air Quality
 API'sinden gelir
 
+`/gun-ay-bilgisi/<il>?ilce=<ilce>` Verilen il/ilçe koordinatı için gün
+doğumu/batımı (sunrise-sunset.org) ve ay evresi. Aynı bilgi `/hava-durumu`
+yanıtına da `ayEvresi` alanı olarak otomatik eklenir.
+
 `POST /toplu` tek istekte birden çok yer (`{"sorgular": ["istanbul",
 "kadikoy/istanbul"]}`) `/ara` ile aynı akıllı çözümleyiciyi kullanır,
 kısmi başarısızlığa toleranslıdır, paralel işlenir.

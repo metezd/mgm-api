@@ -1057,9 +1057,10 @@ class MGMWeather:
             veri["kaynak"] = "open-meteo"
             return veri
 
+    # Hava kalitesi + UV indeksi
     @staticmethod
     def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """İki koordinat arası büyük daire mesafesi. En yakın İBB
+        """İki koordinat arası büyük daire mesafesi (km). En yakın İBB
         istasyonunu bulmak için kullanılır."""
         yaricap = 6371.0088
         f1, f2 = math.radians(lat1), math.radians(lat2)
@@ -1260,12 +1261,13 @@ class MGMWeather:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
 
         Öncelik İBB'nin resmi hava kalitesi ölçüm ağındadır (yalnızca
-        İstanbul'u, `ibb_max_mesafe_km` yarıçapında kapsar) PM2.5 ve UV
+        İstanbul'u, `ibb_max_mesafe_km` yarıçapında kapsar); PM2.5 ve UV
         indeksi İBB servisinde bulunmadığından her zaman Open-Meteo Air
-        Quality API'siyle tamamlanır. İBB'ye hiç ulaşılamazsa
-        tüm alanlar Open Meteo'dan gelir. Döndürülen sözlükte her zaman
+        Quality API'siyle (key gerektirmez) tamamlanır. İBB'ye hiç
+        ulaşılamazsa (İstanbul dışı konum, istasyon/servis hatası vb.)
+        tüm alanlar Open-Meteo'dan gelir. Döndürülen sözlükte her zaman
         `kaynaklar` alanı bulunur: hangi alanın hangi servisten geldiğini
-        gösterir (örn. {"pm10": "ibb", "pm25": "open-meteo", ...})
+        gösterir (örn. {"pm10": "ibb", "pm25": "open-meteo", ...}).
         """
         acik_meteo = self._open_meteo_hava_kalitesi(enlem, boylam)
         sonuc: dict[str, Any] = {
@@ -1379,6 +1381,47 @@ class MGMWeather:
             }
 
         return self._cached_get(cache_key, loader)
+
+    _AY_EVRE_ADLARI = (
+        "Yeni Ay",
+        "Hilal (Büyüyen)",
+        "İlk Dördün",
+        "Şişkin Ay (Büyüyen)",
+        "Dolunay",
+        "Şişkin Ay (Küçülen)",
+        "Son Dördün",
+        "Hilal (Küçülen)",
+    )
+    _SINODIK_AY_GUN = 29.530588861
+    # 2000-01-06 18:14 UTC referans yeni ay (bilinen astronomik epoch)
+    _AY_EPOKU = _dt.datetime(2000, 1, 6, 18, 14, tzinfo=_dt.timezone.utc)
+
+    def ay_evresi(self, tarih: _dt.date | None = None) -> dict[str, Any]:
+        """
+        Verilen tarih (UTC gün ortası referans alınarak) için ay evresini
+        yerel olarak hesaplar; dış servis/bağımlılık gerektirmez.
+
+        Döner: evreAdi, yasGunu (0-29.53), aydinlanmaOrani (0-1),
+        buyuyorMu (bir sonraki dolunaya mı yaklaşıyor).
+        """
+        an = _dt.datetime.combine(
+            tarih or _dt.datetime.now(_dt.timezone.utc).date(),
+            _dt.time(hour=12),
+            tzinfo=_dt.timezone.utc,
+        )
+        gecen_gun = (an - self._AY_EPOKU).total_seconds() / 86400.0
+        yas = gecen_gun % self._SINODIK_AY_GUN
+
+        evre_orani = yas / self._SINODIK_AY_GUN  # 0-1
+        evre_indeksi = int((evre_orani * 8) + 0.5) % 8
+        aydinlanma = (1 - math.cos(2 * math.pi * evre_orani)) / 2
+
+        return {
+            "evreAdi": self._AY_EVRE_ADLARI[evre_indeksi],
+            "yasGunu": round(yas, 2),
+            "aydinlanmaOrani": round(aydinlanma, 4),
+            "buyuyorMu": evre_orani < 0.5,
+        }
 
     def _il_yakin_eslesme(self, token: str) -> str | None:
         """
@@ -1591,6 +1634,12 @@ class MGMWeather:
             if sonuc["enlem"] and sonuc["boylam"]:
                 sonuc.update(self.gun_dogumu_batimi(sonuc["enlem"], sonuc["boylam"]))
         except MGMWeatherError:
+            pass
+
+        # Ay evresi yerel hesaplandığı için harici servise bağımlı değil
+        try:
+            sonuc["ayEvresi"] = self.ay_evresi()
+        except Exception:  # noqa: BLE001 - yerel hesap, beklenmedik durum korumas
             pass
 
         return sonuc
