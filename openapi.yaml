@@ -354,6 +354,7 @@ paths:
         Türkiye'nin 81 il sınırını (GeoJSON, açık kaynak/OSM türevi) MGM
         son durum sıcaklıklarıyla birleştirip tek bir FeatureCollection
         olarak döner.
+      responses:
         "200":
           description: GeoJSON FeatureCollection
           content:
@@ -369,6 +370,35 @@ paths:
                 properties:
                   basarili: { type: boolean, example: false }
                   hata: { type: string }
+
+  /don-uyarisi/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Tarımsal don/kırağı riski (5 günlük, sezgisel)
+      description: >
+        5 günlük tahminin en düşük sıcaklığına dayalı sezgisel don/kırağı
+        risk sınıflandırması (Kırağı Riski / Hafif-Orta-Kuvvetli-Çok
+        Kuvvetli Don) döner; ayrıca düşük rüzgar (<10 km/h) + yüksek nem
+        (>%60) birlikte görüldüğünde radyatif kırağı için elverişli koşul
+        olduğu `kiragiKosuluUygun` ile ayrıca işaretlenir. MGM'nin resmi
+        bir don uyarı ürünü DEĞİLDİR — 5 günlük sıcaklık tahmininden
+        türetilmiş bir göstergedir.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Don/kırağı risk tahmini
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/DonKiragiRiski"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
 
   /tahmin/{il}:
     get:
@@ -686,6 +716,44 @@ components:
                     nullable: true
                     example: "Az Bulutlu"
                   guncellemeZamani: { type: string, nullable: true }
+
+    DonKiragiRiski:
+      type: object
+      description: >
+        MGM'nin resmi bir don uyarı ürünü değildir; 5 günlük sıcaklık
+        tahmininden türetilmiş sezgisel bir risk göstergesidir.
+      properties:
+        il: { type: string, example: "Erzurum" }
+        ilce: { type: string, nullable: true }
+        genelRiskSeviyesi:
+          type: string
+          enum:
+            - Risk Yok
+            - Bilinmiyor
+            - Kırağı Riski
+            - Hafif Don
+            - Orta Don
+            - Kuvvetli Don
+            - Çok Kuvvetli Don
+          example: "Kuvvetli Don"
+        gunler:
+          type: array
+          items:
+            type: object
+            properties:
+              tarih: { type: string, example: "2026-01-10" }
+              enDusukSicaklik: { type: number, nullable: true, example: -6 }
+              seviye: { type: string, example: "Kuvvetli Don" }
+              aciklama:
+                type: string
+                example: "Çoğu bitki türü için zarar riski yüksek."
+              kiragiKosuluUygun:
+                type: boolean
+                description: >
+                  Düşük rüzgar (<10 km/h) + yüksek nem (>%60) birlikte
+                  görüldüğünde radyatif kırağı için elverişli koşul
+                example: true
+        aciklama: { type: string }
 
     GunAyBilgisi:
       type: object

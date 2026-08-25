@@ -60,6 +60,7 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel astronomik formüllerle hesaplanmış Ay Evresi bilgisini döner. |
 | `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. Paralel çalışır. |
 | `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet, Mapbox) için hazır, 81 ilin anlık sıcaklık verisiyle birleştirilmiş saf GeoJSON FeatureCollection döner. |
+| `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**, türetilmiş bir göstergedir. |
 | `GET` | `/metrics` | Prometheus formatında sistem metriklerini (cache hit/miss, HTTP süreleri, circuit breaker durumu) döner. |
 
 ## Daha fazlası

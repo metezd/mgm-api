@@ -1361,6 +1361,100 @@ class MGMWeather:
             )
         return sonuc
 
+    # Tarımsal don / kırağı riski — MGM'nin ayrı bir resmi don uç noktası
+    # yok; bu yüzden 5 günlük tahminin (enDusuk, nem, rüzgar) üzerinden
+    # ziraat meteorolojisinde yaygın kullanılan eşiklerle sezgisel bir
+    # risk sınıflandırması yapılır. RESMİ MGM DON UYARISI DEĞİLDİR.
+    _DON_ESIKLERI = (
+        # (üst_sinir_C, seviye, aciklama)
+        (-10.0, "Çok Kuvvetli Don", "Hassas tüm bitkiler için ciddi zarar riski."),
+        (-5.0, "Kuvvetli Don", "Çoğu bitki türü için zarar riski yüksek."),
+        (-2.0, "Orta Don", "Soğuğa hassas bitkilerde zarar görülebilir."),
+        (0.0, "Hafif Don", "Hassas fide ve çiçeklerde zarar olasılığı var."),
+        (4.0, "Kırağı Riski", "Açık/durgun gecelerde yüzey kırağısı olasılığı var."),
+    )
+
+    def _don_seviyesi(self, en_dusuk: float | None) -> tuple[str, str]:
+        if en_dusuk is None:
+            return "Bilinmiyor", "Tahmin verisi eksik."
+        for esik, seviye, aciklama in self._DON_ESIKLERI:
+            if en_dusuk <= esik:
+                return seviye, aciklama
+        return "Risk Yok", "Don/kırağı beklenmiyor."
+
+    def don_kiragi_riski(self, istasyon_id: int | str, il: str = "", ilce: str | None = None) -> dict[str, Any]:
+        """
+        Verilen istasyon için 5 günlük tarımsal don/kırağı riski tahmini.
+
+        Yöntem: gunluk_tahmin()'den gelen günlük en düşük sıcaklık (°C)
+        eşik tablosuna göre sınıflandırılır (Kırağı Riski / Hafif /
+        Orta / Kuvvetli / Çok Kuvvetli Don). Ayrıca düşük rüzgar
+        (<10 km/h) + yüksek nem (>%60) birlikte görüldüğünde radyatif
+        kırağı oluşumu için elverişli koşul olduğu ayrıca işaretlenir
+        (`kiragiKosuluUygun`) — bu, çıplak gökyüzü/durgun gece gibi
+        klasik kırağı oluşum koşullarının sıcaklık-dışı bir yaklaşımıdır.
+
+        Not: Bu, MGM'nin resmi bir don uyarı ürünü DEĞİLDİR; 5 günlük
+        sıcaklık tahmininden türetilmiş bir risk göstergesidir. Kritik
+        tarımsal kararlar için MGM'nin resmi tarım meteorolojisi
+        bültenleri esas alınmalıdır.
+        """
+        gunler = self.gunluk_tahmin(istasyon_id)
+
+        sonuc_gunler = []
+        seviye_sirasi = {
+            "Risk Yok": 0,
+            "Bilinmiyor": 0,
+            "Kırağı Riski": 1,
+            "Hafif Don": 2,
+            "Orta Don": 3,
+            "Kuvvetli Don": 4,
+            "Çok Kuvvetli Don": 5,
+        }
+        en_yuksek_risk_sirasi = 0
+        for gun in gunler:
+            en_dusuk = gun.get("enDusuk")
+            nem = gun.get("enYuksekNem")
+            ruzgar = gun.get("ruzgarHizi")
+            seviye, aciklama = self._don_seviyesi(
+                float(en_dusuk) if en_dusuk is not None else None
+            )
+            kiragi_kosulu_uygun = (
+                en_dusuk is not None
+                and float(en_dusuk) <= 4.0
+                and nem is not None
+                and float(nem) >= 60.0
+                and ruzgar is not None
+                and float(ruzgar) < 10.0
+            )
+            sonuc_gunler.append(
+                {
+                    "tarih": gun.get("tarih"),
+                    "enDusukSicaklik": en_dusuk,
+                    "seviye": seviye,
+                    "aciklama": aciklama,
+                    "kiragiKosuluUygun": kiragi_kosulu_uygun,
+                }
+            )
+            en_yuksek_risk_sirasi = max(
+                en_yuksek_risk_sirasi, seviye_sirasi.get(seviye, 0)
+            )
+
+        genel_seviye = next(
+            (k for k, v in seviye_sirasi.items() if v == en_yuksek_risk_sirasi),
+            "Risk Yok",
+        )
+        return {
+            "il": il,
+            "ilce": ilce,
+            "genelRiskSeviyesi": genel_seviye,
+            "gunler": sonuc_gunler,
+            "aciklama": (
+                "5 günlük sıcaklık tahmininden türetilmiş sezgisel risk "
+                "göstergesidir; MGM'nin resmi don uyarı ürünü değildir."
+            ),
+        }
+
     # Saatlik tahmin
     def saatlik_tahmin(self, istasyon_id: int | str) -> list[dict[str, Any]]:
         """Bir istasyon için saatlik tahmin verisini döndürür (mevcutsa).

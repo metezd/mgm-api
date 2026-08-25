@@ -38,6 +38,14 @@ Uç noktalar:
            tek bir FeatureCollection. Yanıt "basarili" sarmalayıcısı
            OLMADAN saf GeoJSON olarak döner
 
+    GET /don-uyarisi/<il>?ilce=<ilce>
+        -> Tarımsal don/kırağı riski: 5 günlük tahminin en düşük
+           sıcaklığına dayalı sezgisel risk sınıflandırması (Kırağı
+           Riski / Hafif-Orta-Kuvvetli-Çok Kuvvetli Don) + düşük
+           rüzgar/yüksek nem koşullarında kırağı uygunluk işareti.
+           MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
+           göstergedir.
+
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
@@ -549,6 +557,22 @@ def map_geojson():
         return jsonify(veri)
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 502)
+
+
+@app.get("/don-uyarisi/<il>")
+def don_uyarisi(il: str):
+    """
+    Tarımsal don/kırağı riski (5 günlük tahmin, sezgisel sınıflandırma).
+    MGM'nin resmi bir don uyarı ürünü DEĞİLDİR — bkz. mgm.don_kiragi_riski
+    docstring'i.
+    """
+    ilce = request.args.get("ilce")
+    try:
+        istasyon_id = _istasyon_id_getir(il, ilce)
+        veri = mgm.don_kiragi_riski(istasyon_id, il=il, ilce=ilce)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
 
 
 @app.errorhandler(404)
