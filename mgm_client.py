@@ -389,7 +389,8 @@ class MGMWeather:
     OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
     # Next.js SSR sayfası, veri <script id="__NEXT_DATA__"> içine gömülü JSON olarak gelir.
     # Belgeli bir REST API değil bu yüzden yalnızca sıcaklık için BİRİNCİL kaynak olarak kullanılır
-    # sayfa yapısı değişirse (DOM/anahtar) MGMWeatherError fırlatılır ve deniz_durumu() otomatik olarak Open-Meteo'ya düşer.
+    # sayfa yapısı değişirse (DOM/anahtar) MGMWeatherError fırlatılır ve 
+    # deniz_durumu() otomatik olarak Open-Meteo'ya düşer.
     PIRI_REIS_DENIZ_SUYU_URL = "https://pirireis.mgm.gov.tr/deniz-suyu-sicakliklari"
     PIRI_REIS_HEADERS = {
         "User-Agent": (
@@ -1176,9 +1177,9 @@ class MGMWeather:
 
     def _piri_reis_deniz_istasyonlari(self) -> list[dict[str, Any]]:
         """
-        MGM'nin Piri Reis "Deniz Suyu Sıcaklıkları" sayfasını çekip <script id="__NEXT_DATA__"> içine gömülü JSON'dan
-        istasyon listesi ve anlık sıcaklıkları ayıklar. Bu resmi bir REST API DEĞİLDİR
-        Bu yüzden yalnızca 'en iyi çaba' birincil kaynak olarak kullanılır
+        MGM'nin Piri Reis "Deniz Suyu Sıcaklıkları" sayfasını çekip <script id="__NEXT_DATA__"> ,
+        içine gömülü JSON'dan istasyon listesi ve anlık sıcaklıkları ayıklar. 
+        Bu resmi bir REST API DEĞİLDİR Bu yüzden sadece birincil kaynak olarak kullanılır
         herhangi bir adımda başarısız olursa Open-Meteo'ya düşer.
         """
         cache_key = self._cache_key("piri-reis-deniz-suyu")
