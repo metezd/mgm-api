@@ -62,6 +62,32 @@ Uç noktalar:
            MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
            göstergedir.
 
+    POST /favoriler/<liste_id>
+        -> {"sorgu": "kadikoy/istanbul"} gövdesiyle bir favori ekler.
+           <liste_id> istemcinin kendi seçtiği/ürettiği bir kimliktir
+           (hesap/kimlik doğrulama YOKTUR — liste_id'yi bilen herkes
+           listeyi okur/düzenler, tıpkı paylaşılmayan bir Pastebin
+           linki gibi ele alınmalıdır). Liste başına en fazla
+           APP_FAVORI_MAX_KAYIT (varsayılan 30) kayıt.
+
+    DELETE /favoriler/<liste_id>
+        -> {"sorgu": "kadikoy/istanbul"} gövdesiyle bir favoriyi siler.
+
+    GET /favoriler/<liste_id>
+        -> Listedeki tüm sorgular için hava durumunu tek istekte döner
+           (/toplu ile aynı akıllı çözümleyici + paralel yürütme,
+           kısmi başarısızlığa toleranslı).
+
+    GET /favoriler/<liste_id>/liste
+        -> Hava durumu çekmeden, yalnızca kayıtlı sorguları döner
+           (hafif; liste yönetimi arayüzleri için).
+
+    Kalıcılık: REDIS_URL tanımlıysa favoriler Redis'te tutulur (yeniden
+    başlatmalarda kalıcı, worker/instance'lar arası paylaşılır,
+    APP_FAVORI_TTL_SANIYE varsayılan 90 gün hareketsizlikte düşer).
+    Redis yoksa süreç-içi belleğe düşülür — yalnızca tek worker/geliştirme
+    ortamı için uygundur, süreç yeniden başladığında kaybolur.
+
 Rate limiting:
     IP başına APP_RATE_LIMIT_MAX_REQUESTS (varsayılan 60) istek /
     APP_RATE_LIMIT_WINDOW_SECONDS (varsayılan 60sn). /map/geojson soğuk
@@ -78,9 +104,13 @@ Rate limiting:
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import logging
 import os
 import random
+import re
+import threading
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -235,8 +265,135 @@ def _rate_limit_kontrol(
     return True, max(0, limit - len(bucket)), reset_epoch
 
 
+# Hesap/kimlik doğrulama yok: liste_id istemcinin kendi seçtiği bir
+# kimliktir cihazda üretilip saklanan bir UUID. liste_id'yi bilen
+# herkes o listeyi okur haberiniz olsun
+FAVORI_MAX_KAYIT = int(os.getenv("APP_FAVORI_MAX_KAYIT", "30"))
+FAVORI_TTL_SANIYE = int(os.getenv("APP_FAVORI_TTL_SANIYE", str(90 * 24 * 3600)))
+FAVORI_LISTE_ID_REGEX = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+FAVORI_SORGU_MAX_UZUNLUK = 100
+
+
+_FAVORI_BELLEK: dict[str, dict[str, dict]] = defaultdict(dict)
+_FAVORI_BELLEK_KILIT = threading.Lock()
+
+
+class FavoriHatasi(Exception):
+    """Favoriler özelliğine özgü kullanıcı hataları (limit aşımı, geçersiz girdi vb.)."""
+
+
+def _favori_liste_id_gecerli(liste_id: str) -> bool:
+    return bool(FAVORI_LISTE_ID_REGEX.match(liste_id))
+
+
+def _favori_redis_key(liste_id: str) -> str:
+    return f"{mgm.redis_prefix}favoriler:{liste_id}"
+
+
+def _favori_kayit_olustur(sorgu: str) -> dict:
+    return {
+        "sorgu": sorgu,
+        "eklenmeTarihi": _dt.datetime.now(_dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+    }
+
+
+def _favori_ekle(liste_id: str, sorgu: str) -> dict:
+    sorgu = sorgu.strip()
+    if not sorgu:
+        raise FavoriHatasi("'sorgu' boş olamaz.")
+    if len(sorgu) > FAVORI_SORGU_MAX_UZUNLUK:
+        raise FavoriHatasi(
+            f"'sorgu' en fazla {FAVORI_SORGU_MAX_UZUNLUK} karakter olabilir."
+        )
+    slug = sorgu.lower()
+    kayit = _favori_kayit_olustur(sorgu)
+
+    if mgm._redis_available and mgm.redis_client is not None:
+        try:
+            key = _favori_redis_key(liste_id)
+            mevcut_alanlar = {
+                a.decode() if isinstance(a, bytes) else a
+                for a in mgm.redis_client.hkeys(key)
+            }
+            if slug not in mevcut_alanlar and len(mevcut_alanlar) >= FAVORI_MAX_KAYIT:
+                raise FavoriHatasi(
+                    f"Bu listede en fazla {FAVORI_MAX_KAYIT} kayıt olabilir."
+                )
+            mgm.redis_client.hset(key, slug, json.dumps(kayit, ensure_ascii=False))
+            mgm.redis_client.expire(key, FAVORI_TTL_SANIYE)
+            return kayit
+        except mgm._redis_error_cls:
+            logger.warning(
+                "Favori eklenemedi, bellek içi depolamaya düşülüyor."
+            )
+
+    with _FAVORI_BELLEK_KILIT:
+        liste = _FAVORI_BELLEK[liste_id]
+        if slug not in liste and len(liste) >= FAVORI_MAX_KAYIT:
+            raise FavoriHatasi(f"Bu listede en fazla {FAVORI_MAX_KAYIT} kayıt olabilir.")
+        liste[slug] = kayit
+    return kayit
+
+
+def _favori_sil(liste_id: str, sorgu: str) -> bool:
+    slug = sorgu.strip().lower()
+    if mgm._redis_available and mgm.redis_client is not None:
+        try:
+            key = _favori_redis_key(liste_id)
+            silindi = mgm.redis_client.hdel(key, slug)
+            return bool(silindi)
+        except mgm._redis_error_cls:
+            logger.warning(
+                "Favori silinemedi, bellek içi depolamaya düşülüyor."
+            )
+
+    with _FAVORI_BELLEK_KILIT:
+        liste = _FAVORI_BELLEK.get(liste_id, {})
+        if slug in liste:
+            del liste[slug]
+            return True
+    return False
+
+
+def _favori_listele(liste_id: str) -> list[dict]:
+    if mgm._redis_available and mgm.redis_client is not None:
+        try:
+            key = _favori_redis_key(liste_id)
+            ham = mgm.redis_client.hgetall(key)
+            sonuc = []
+            for deger in ham.values():
+                try:
+                    sonuc.append(json.loads(deger))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            return sorted(sonuc, key=lambda k: k.get("eklenmeTarihi") or "")
+        except mgm._redis_error_cls:
+            logger.warning(
+                "Favoriler listelenemedi, bellek içi depolama okunuyor."
+            )
+
+    with _FAVORI_BELLEK_KILIT:
+        liste = _FAVORI_BELLEK.get(liste_id, {})
+        return sorted(liste.values(), key=lambda k: k.get("eklenmeTarihi") or "")
+
+
 def _hata_yanit(exc: Exception, kod: int = 502):
     return jsonify({"basarili": False, "hata": str(exc)}), kod
+
+
+def _hava_durumu_akilli_guvenli(sorgu: str) -> dict:
+    """/toplu ve /favoriler/<liste_id> tarafından paylaşılır: serbest
+    metin sorguyu çözüp hava durumunu döner, hata durumunda kısmi
+    başarısızlığa tolerans için exception'ı yakalayıp sonuç sözlüğüne
+    gömer (üst çağrı 200 dönmeye devam eder)."""
+    sorgu = sorgu.strip()
+    try:
+        veri = mgm.hava_durumu_akilli(sorgu)
+        return {"sorgu": sorgu, "basarili": True, "veri": veri}
+    except MGMWeatherError as exc:
+        return {"sorgu": sorgu, "basarili": False, "hata": str(exc)}
 
 
 def _istasyon_id_getir(il: str, ilce: str | None) -> int | str:
@@ -477,19 +634,102 @@ def toplu():
             {"basarili": False, "hata": "'sorgular' listesindeki her öğe boş olmayan bir metin olmalıdır."}
         ), 400
 
-    def _tek_sorgu(sorgu: str) -> dict:
-        sorgu = sorgu.strip()
-        try:
-            veri = mgm.hava_durumu_akilli(sorgu)
-            return {"sorgu": sorgu, "basarili": True, "veri": veri}
-        except MGMWeatherError as exc:
-            return {"sorgu": sorgu, "basarili": False, "hata": str(exc)}
-
     # MGMWeather client thread safe yapıdadır
     # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi, 
     # sıralı toplam yerine en yavaş tekil sorgu süresine indirgenir.
     with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
-        sonuclar = list(havuz.map(_tek_sorgu, sorgular))
+        sonuclar = list(havuz.map(_hava_durumu_akilli_guvenli, sorgular))
+
+    return jsonify({"basarili": True, "veri": sonuclar})
+
+
+@app.post("/favoriler/<liste_id>")
+def favori_ekle(liste_id: str):
+    """Bir favoriye sorgu ekler/günceller — bkz. modül docstring'i."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    if not request.is_json:
+        return jsonify(
+            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
+        ), 400
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
+        return jsonify(
+            {"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}
+        ), 400
+    try:
+        kayit = _favori_ekle(liste_id, body["sorgu"])
+    except FavoriHatasi as exc:
+        return jsonify({"basarili": False, "hata": str(exc)}), 400
+    return jsonify({"basarili": True, "veri": kayit})
+
+
+@app.delete("/favoriler/<liste_id>")
+def favori_sil(liste_id: str):
+    """Bir favoriden sorgu siler — bkz. modül docstring'i."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    if not request.is_json:
+        return jsonify(
+            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
+        ), 400
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
+        return jsonify(
+            {"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}
+        ), 400
+    silindi = _favori_sil(liste_id, body["sorgu"])
+    if not silindi:
+        return jsonify(
+            {"basarili": False, "hata": "Bu sorgu listede bulunamadı."}
+        ), 404
+    return jsonify({"basarili": True})
+
+
+@app.get("/favoriler/<liste_id>/liste")
+def favori_liste_goster(liste_id: str):
+    """Hava durumu çekmeden yalnızca kayıtlı sorguları döner (hafif)."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    return jsonify({"basarili": True, "veri": _favori_listele(liste_id)})
+
+
+@app.get("/favoriler/<liste_id>")
+def favori_hava_durumu(liste_id: str):
+    """
+    Listedeki tüm sorgular için hava durumunu tek istekte döner (/toplu
+    ile aynı akıllı çözümleyici + paralel yürütme, kısmi başarısızlığa
+    toleranslı).
+    """
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    kayitlar = _favori_listele(liste_id)
+    if not kayitlar:
+        return jsonify({"basarili": True, "veri": []})
+
+    sorgular = [k["sorgu"] for k in kayitlar]
+    with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
+        sonuclar = list(havuz.map(_hava_durumu_akilli_guvenli, sorgular))
 
     return jsonify({"basarili": True, "veri": sonuclar})
 

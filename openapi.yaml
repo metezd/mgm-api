@@ -22,6 +22,8 @@ tags:
     description: Meteorolojik uyarılar (deneysel, ham geçiş)
   - name: harita
     description: GeoJSON harita verisi (Leaflet/Mapbox uyumlu)
+  - name: favoriler
+    description: Kimlik doğrulamasız, istemci tanımlı liste_id ile favori il/ilçe listeleri
   - name: durum
     description: Servis sağlığı
 
@@ -246,6 +248,145 @@ paths:
                           description: Yalnızca basarili=false iken bulunur.
         "400":
           description: "Gövde JSON değil, 'sorgular' eksik/boş/liste değil ya da limit aşıldı"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /favoriler/{liste_id}:
+    parameters:
+      - name: liste_id
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{3,64}$" }
+        description: >
+          İstemcinin kendi seçtiği/ürettiği bir kimlik (örn. cihazda
+          üretilip saklanan bir UUID). Hesap/kimlik doğrulama YOKTUR —
+          liste_id'yi bilen herkes o listeyi okur/düzenler, paylaşılmayan
+          bir Pastebin linki gibi ele alınmalıdır.
+    post:
+      tags: [favoriler]
+      summary: Favori ekle/güncelle
+      description: >
+        Listeye bir sorgu ekler (aynı sorgu tekrar eklenirse zaman damgası
+        güncellenir). Liste başına en fazla APP_FAVORI_MAX_KAYIT
+        (varsayılan 30) kayıt. REDIS_URL tanımlıysa kalıcıdır
+        (APP_FAVORI_TTL_SANIYE, varsayılan 90 gün hareketsizlikte düşer);
+        tanımlı değilse yalnızca tek worker'ın belleğinde tutulur.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sorgu]
+              properties:
+                sorgu:
+                  type: string
+                  maxLength: 100
+                  example: "kadikoy/istanbul"
+      responses:
+        "200":
+          description: Kayıt eklendi/güncellendi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/FavoriKaydi"
+        "400":
+          description: Geçersiz liste_id, eksik/çok uzun sorgu ya da liste limiti aşıldı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+    delete:
+      tags: [favoriler]
+      summary: Favori sil
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sorgu]
+              properties:
+                sorgu: { type: string, example: "kadikoy/istanbul" }
+      responses:
+        "200":
+          description: Silindi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+        "404":
+          description: Sorgu listede bulunamadı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+    get:
+      tags: [favoriler]
+      summary: Favori listesi için hava durumu
+      description: >
+        Listedeki tüm sorgular için hava durumunu tek istekte döner
+        (/toplu ile aynı akıllı çözümleyici + paralel yürütme, kısmi
+        başarısızlığa toleranslı).
+      responses:
+        "200":
+          description: Liste boşsa boş dizi, doluysa /toplu ile aynı formatta sonuç dizisi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sorgu: { type: string }
+                        basarili: { type: boolean }
+                        veri:
+                          $ref: "#/components/schemas/AramaCozuldu"
+                        hata: { type: string }
+        "400":
+          description: Geçersiz liste_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /favoriler/{liste_id}/liste:
+    parameters:
+      - name: liste_id
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{3,64}$" }
+    get:
+      tags: [favoriler]
+      summary: Kayıtlı sorguları listele (hava durumu çekmeden)
+      description: Hafif uç nokta; yalnızca kayıtlı sorgu + eklenme tarihini döner, MGM'ye istek atmaz.
+      responses:
+        "200":
+          description: Kayıtlı favoriler
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FavoriKaydi"
+        "400":
+          description: Geçersiz liste_id
           content:
             application/json:
               schema:
@@ -989,3 +1130,9 @@ components:
       properties:
         basarili: { type: boolean, example: false }
         hata: { type: string, example: "'Xyz' için istasyon bulunamadı." }
+
+    FavoriKaydi:
+      type: object
+      properties:
+        sorgu: { type: string, example: "kadikoy/istanbul" }
+        eklenmeTarihi: { type: string, example: "2026-08-26T11:10:45Z" }
