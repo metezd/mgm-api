@@ -34,10 +34,19 @@ Uç noktalar:
 
     GET /polen/<il>?ilce=<ilce>
         -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
-           zeytin, ambrosia). Open-Meteo Air Quality API
-           üzerinden sezon dışı türler için "Veri Yok"
+           zeytin, ambrosia). Open-Meteo Air Quality API (CAMS Avrupa)
+           üzerinden; sezon dışı/kapsam dışı türler için "Veri Yok"
            döner. Seviyeler (Düşük/Orta/Yüksek/Çok Yüksek) yaklaşık
-           sınıflandırmadır
+           sınıflandırmadır, kesin klinik eşik değildir.
+
+    GET /deniz/<il>?ilce=<ilce>&lat=&lon=
+        -> Deniz suyu sıcaklığı ÖNCELİKLE MGM'nin Piri Reis istasyon verisinden, 
+           başarısız olursa Open-Meteo Marine API'sinden gelir 
+           dalga verisi her zaman Open-Meteo'dan gelir (Piri Reis kaynağında yok). 
+           "kaynaklar" alanı hangi verinin nereden geldiğini gösterir. 
+           Kıyıya daha yakın bir koordinat için isteğe bağlı ?lat=&lon= ile override
+           edilebilir. İkisi de kapsam dışıysa tüm alanlar null döner
+           "kapsamDisi": true ile işaretlenir
 
     GET /map/geojson
         -> Türkiye il sınırları (GeoJSON) + MGM son durum sıcaklıkları
@@ -120,6 +129,9 @@ mgm = MGMWeather(
     harita_sicaklik_ttl_saniye=int(
         os.getenv("MGM_HARITA_SICAKLIK_TTL_SANIYE", "600")
     ),
+    deniz_ttl_saniye=int(os.getenv("MGM_DENIZ_TTL_SANIYE", "1800")),
+    piri_reis_ttl_saniye=int(os.getenv("MGM_PIRI_REIS_TTL_SANIYE", "1800")),
+    piri_reis_max_mesafe_km=float(os.getenv("MGM_PIRI_REIS_MAX_MESAFE_KM", "60")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
 )
@@ -555,9 +567,10 @@ def gun_ay_bilgisi(il: str):
 @app.get("/polen/<il>")
 def polen(il: str):
     """
-    Open-Meteo Air Quality API (CAMS Avrupa) üzerinden
-    sadece ilgili türün sezonunda ve modelin kapsadığı konumlarda veri
-    döner
+    Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin,
+    ambrosia). Open-Meteo Air Quality API (CAMS Avrupa) üzerinden;
+    yalnızca ilgili türün sezonunda ve modelin kapsadığı konumlarda veri
+    döner, aksi halde `seviye: "Veri Yok"` ile işaretlenir.
     """
     ilce = request.args.get("ilce")
     try:
@@ -568,6 +581,46 @@ def polen(il: str):
                 "polen indeksi koordinat gerektirir."
             )
         veri = mgm.polen_indeksi(float(enlem), float(boylam))
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
+@app.get("/deniz/<il>")
+def deniz(il: str):
+    """
+    Anlık deniz suyu sıcaklığı + dalga durumu (yükseklik, periyot, yön).
+    Sıcaklık öncelikle MGM Piri Reis istasyon verisinden, kapsam
+    dışı/başarısız olursa Open-Meteo Marine API'sinden; dalga verisi
+    her zaman Open-Meteo'dan gelir. Varsayılan olarak il/ilçenin
+    istasyon koordinatı kullanılır — kıyı ilçeleri için daha isabetlidir.
+    Kıyıya daha yakın özel bir koordinat vermek için ?lat=&lon= geçilebilir
+    (karasal bir il merkezi yerine, örn. bir plaj/koy koordinatı).
+    """
+    ilce = request.args.get("ilce")
+    lat_str = request.args.get("lat")
+    lon_str = request.args.get("lon")
+    try:
+        if lat_str and lon_str:
+            try:
+                enlem = float(lat_str)
+                boylam = float(lon_str)
+            except ValueError:
+                return jsonify(
+                    {"basarili": False, "hata": "'lat' ve 'lon' geçerli birer sayı olmalıdır."}
+                ), 400
+            if not (-90 <= enlem <= 90) or not (-180 <= boylam <= 180):
+                return jsonify(
+                    {"basarili": False, "hata": "'lat' -90..90, 'lon' -180..180 aralığında olmalıdır."}
+                ), 400
+        else:
+            _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+            if enlem is None or boylam is None:
+                raise MGMWeatherError(
+                    f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                    "deniz durumu koordinat gerektirir."
+                )
+        veri = mgm.deniz_durumu(float(enlem), float(boylam))
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)

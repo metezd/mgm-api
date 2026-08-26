@@ -356,6 +356,11 @@ class MGMWeather:
     ibb_max_mesafe_km: float = 40.0
     geojson_sinir_ttl_saniye: int = 2_592_000  # 30 gün
     harita_sicaklik_ttl_saniye: int = 600
+    # Deniz durumu hava sıcaklığından daha yavaş değişir = daha uzun TTL
+    deniz_ttl_saniye: int = 1800
+    piri_reis_ttl_saniye: int = 1800
+    # verilen koordinata en yakın istasyon mesafeden uzaksa çalışmıyo kabul edilip Open-Meteo'ya düşülür
+    piri_reis_max_mesafe_km: float = 60.0
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     redis_client: Any | None = None
@@ -377,6 +382,22 @@ class MGMWeather:
     OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
     OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
     OPEN_METEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    # Deniz suyu sıcaklığı ve dalga yüksekliği: 
+    # MGM'nin Piri Reis denizcilik sayfaları bu veriyi sağlıyor ama yalnızca
+    # tarayıcı üzerinden görüntülenen HTML sayfaları olarak. 
+    # Bu yüzden Open-Meteo Marine API kullanılıyor.
+    OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
+    # Next.js SSR sayfası, veri <script id="__NEXT_DATA__"> içine gömülü JSON olarak gelir.
+    # Belgeli bir REST API değil bu yüzden yalnızca sıcaklık için BİRİNCİL kaynak olarak kullanılır
+    # sayfa yapısı değişirse (DOM/anahtar) MGMWeatherError fırlatılır ve deniz_durumu() otomatik olarak Open-Meteo'ya düşer.
+    PIRI_REIS_DENIZ_SUYU_URL = "https://pirireis.mgm.gov.tr/deniz-suyu-sicakliklari"
+    PIRI_REIS_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like "
+            "Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+    }
     NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
     NOMINATIM_USER_AGENT = "mgm-hava-durumu-api/1.0 (https://github.com/metezd/hava-durumu)"
     # İBB Açık Veri Portalı — Çevre Koruma ve Kontrol Dairesi Başkanlığı
@@ -1153,6 +1174,96 @@ class MGMWeather:
             return None
         return en_yakin
 
+    def _piri_reis_deniz_istasyonlari(self) -> list[dict[str, Any]]:
+        """
+        MGM'nin Piri Reis "Deniz Suyu Sıcaklıkları" sayfasını çekip <script id="__NEXT_DATA__"> içine gömülü JSON'dan
+        istasyon listesi ve anlık sıcaklıkları ayıklar. Bu resmi bir REST API DEĞİLDİR
+        Bu yüzden yalnızca 'en iyi çaba' birincil kaynak olarak kullanılır
+        herhangi bir adımda başarısız olursa Open-Meteo'ya düşer.
+        """
+        cache_key = self._cache_key("piri-reis-deniz-suyu")
+
+        def loader() -> list[dict[str, Any]]:
+            try:
+                resp = self.session.get(
+                    self.PIRI_REIS_DENIZ_SUYU_URL,
+                    headers=self.PIRI_REIS_HEADERS,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+            except requests.RequestException as exc:
+                raise MGMWeatherError(
+                    f"Piri Reis deniz suyu sıcaklığı sayfasına ulaşılamadı: {exc}"
+                ) from exc
+
+            eslesme = re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                resp.text,
+                re.DOTALL,
+            )
+            if not eslesme:
+                raise MGMWeatherError(
+                    "Piri Reis sayfa yapısı değişmiş görünüyor "
+                    "(__NEXT_DATA__ bulunamadı)."
+                )
+            try:
+                yuk = json.loads(eslesme.group(1))
+                ham_veri = yuk["props"]["pageProps"]["data"]
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise MGMWeatherError(
+                    f"Piri Reis JSON yapısı beklenmedik: {exc}"
+                ) from exc
+
+            istasyonlar: list[dict[str, Any]] = []
+            for kayit in ham_veri if isinstance(ham_veri, list) else []:
+                sicaklik = kayit.get("denizSicaklik")
+                if sicaklik is None:
+                    continue
+                try:
+                    enlem = float(kayit["enlem"])
+                    boylam = float(kayit["boylam"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                istasyonlar.append(
+                    {
+                        "istasyonId": kayit.get("istNo"),
+                        "ad": kayit.get("istAd"),
+                        "il": kayit.get("il"),
+                        "ilce": kayit.get("ilce"),
+                        "enlem": enlem,
+                        "boylam": boylam,
+                        "sicaklik": float(sicaklik),
+                        "olcumZamani": kayit.get("denizVeriZamani"),
+                    }
+                )
+            if not istasyonlar:
+                raise MGMWeatherError(
+                    "Piri Reis deniz suyu sıcaklığı verisi boş ya da "
+                    "beklenmeyen formatta döndü."
+                )
+            return istasyonlar
+
+        return self._cached_get(
+            cache_key, loader, ttl_override=self.piri_reis_ttl_saniye
+        )
+
+    def _piri_reis_en_yakin_istasyon(
+        self, enlem: float, boylam: float
+    ) -> dict[str, Any] | None:
+        """Verilen koordinata en yakın Piri Reis deniz istasyonunu döner;
+        en yakını `piri_reis_max_mesafe_km`'den uzaksa None döner."""
+        istasyonlar = self._piri_reis_deniz_istasyonlari()
+        en_yakin = min(
+            istasyonlar,
+            key=lambda s: self._haversine_km(enlem, boylam, s["enlem"], s["boylam"]),
+        )
+        mesafe = self._haversine_km(
+            enlem, boylam, en_yakin["enlem"], en_yakin["boylam"]
+        )
+        if mesafe > self.piri_reis_max_mesafe_km:
+            return None
+        return en_yakin
+
     @staticmethod
     def _sozlukten_kirletici_deger(veri: dict[str, Any], *adaylar: str) -> float | None:
         """İBB'nin Concentration/AQI nesnelerindeki alan adı casing'i resmi
@@ -1356,8 +1467,18 @@ class MGMWeather:
 
     def polen_indeksi(self, enlem: float, boylam: float) -> dict[str, Any]:
         """
-        Anlık polen konsantrasyonlarını ve her tür için
-        basitleştirilmiş risk seviyesini döner. Open-Meteo Air Quality API'sinden beslenir.
+        Anlık polen konsantrasyonlarını (Grains/m³) ve her tür için
+        basitleştirilmiş risk seviyesini (Yok/Düşük/Orta/Yüksek/Çok
+        Yüksek) döner. Open-Meteo Air Quality API'sinden (CAMS Avrupa
+        modeli, key gerektirmez) beslenir.
+
+        Kapsam notu: CAMS polen verisi yalnızca Avrupa bölgesini ve
+        yalnızca ilgili türün polen sezonunu kapsar; sezon dışında veya
+        modelin kapsamadığı konumlarda tür bazında değer null döner
+        (`seviye: "Veri Yok"` olarak işaretlenir), bu bir hata değildir.
+
+        Not: Seviyeler kesin klinik/tıbbi eşikler değildir — genel
+        yönlendirme amaçlı, EAN/CAMS tabanlı yaklaşık sınıflandırmadır.
         """
         params = {
             "latitude": enlem,
@@ -1423,6 +1544,103 @@ class MGMWeather:
         return self._cached_get(
             cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
         )
+
+    def _open_meteo_deniz(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """Open-Meteo Marine Weather API'sinden anlık dalga
+        durumu ve deniz suyu sıcaklığını döner.
+        """
+        params = {
+            "latitude": enlem,
+            "longitude": boylam,
+            "current": (
+                "wave_height,wave_period,wave_direction,sea_surface_temperature"
+            ),
+            "timezone": "Europe/Istanbul",
+        }
+        cache_key = self._cache_key("open-meteo-deniz", params)
+
+        def loader() -> dict[str, Any]:
+            try:
+                resp = self.session.get(
+                    self.OPEN_METEO_MARINE_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                veri = resp.json()["current"]
+            except (requests.RequestException, KeyError, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Open-Meteo deniz durumu servisinden veri alınamadı: {exc}"
+                ) from exc
+
+            return {
+                "denizSuyuSicakligi": veri.get("sea_surface_temperature"),
+                "dalgaYuksekligi": veri.get("wave_height"),
+                "dalgaPeriyodu": veri.get("wave_period"),
+                "dalgaYonu": veri.get("wave_direction"),
+                "olcumZamani": veri.get("time"),
+            }
+
+        return self._cached_get(cache_key, loader, ttl_override=self.deniz_ttl_saniye)
+
+    def deniz_durumu(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """
+        Anlık deniz suyu sıcaklığı ve dalga durumu (yükseklik, periyot,
+        yön) döner.
+
+        Kaynak önceliği: deniz suyu sıcaklığı için ÖNCELİK MGM'nin Piri
+        Reis sayfasındaki (pirireis.mgm.gov.tr) gerçek istasyon
+        ölçümlerindedir. Dalga yüksekliği/periyodu/yönü Piri Reis kaynağında bulunmadığından 
+        Open-Meteo'dan gelir. Döndürülen sözlükte `kaynaklar` alanı hangi verinin nereden geldiğini gösterir.
+
+        Kapsam notu: Open-Meteo'nun deniz modeli yalnızca deniz
+        grid hücrelerini kapsar; Piri Reis istasyonu da bulunamazsa
+        (ikisi de kapsam dışıysa) tüm alanlar null döner ve
+        `kapsamDisi: true` ile işaretlenir
+        """
+        acik_meteo = self._open_meteo_deniz(enlem, boylam)
+        sonuc: dict[str, Any] = {
+            "denizSuyuSicakligi": acik_meteo["denizSuyuSicakligi"],
+            "dalgaYuksekligi": acik_meteo["dalgaYuksekligi"],
+            "dalgaPeriyodu": acik_meteo["dalgaPeriyodu"],
+            "dalgaYonu": acik_meteo["dalgaYonu"],
+            "olcumZamani": acik_meteo["olcumZamani"],
+            "istasyon": None,
+            "kaynaklar": {
+                "denizSuyuSicakligi": "open-meteo",
+                "dalga": "open-meteo",
+            },
+        }
+
+        try:
+            istasyon = self._piri_reis_en_yakin_istasyon(enlem, boylam)
+            if istasyon is not None:
+                sonuc["denizSuyuSicakligi"] = istasyon["sicaklik"]
+                sonuc["olcumZamani"] = istasyon.get("olcumZamani") or sonuc["olcumZamani"]
+                sonuc["kaynaklar"]["denizSuyuSicakligi"] = "piri-reis"
+                sonuc["istasyon"] = {
+                    "ad": istasyon["ad"],
+                    "il": istasyon.get("il"),
+                    "ilce": istasyon.get("ilce"),
+                    "enlem": istasyon["enlem"],
+                    "boylam": istasyon["boylam"],
+                }
+        except MGMWeatherError as exc:
+            logger.warning(
+                "Piri Reis deniz suyu sıcaklığı alınamadı, Open-Meteo kullanılıyor: %s",
+                exc,
+            )
+
+        kapsam_disi = (
+            sonuc["denizSuyuSicakligi"] is None and sonuc["dalgaYuksekligi"] is None
+        )
+        sonuc["kapsamDisi"] = kapsam_disi
+        sonuc["aciklama"] = (
+            "Kıyıya/açık denize yakın koordinat gerektirir; karasal "
+            "konumlarda ve Piri Reis'in kapsamadığı kıyılarda tüm "
+            "alanlar null döner."
+            if kapsam_disi
+            else None
+        )
+        return sonuc
 
     # Günlük tahmin (5 günlük)
     def _tahmin_ttl(self) -> float:

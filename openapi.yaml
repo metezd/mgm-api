@@ -376,6 +376,48 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /deniz/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Deniz suyu sıcaklığı + dalga durumu
+      description: >
+        Anlık deniz suyu sıcaklığı ve dalga durumu döner.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+        - name: lat
+          in: query
+          required: false
+          schema: { type: number }
+          description: İl merkez istasyonu yerine kullanılacak enlem (kıyıya yakın nokta için)
+        - name: lon
+          in: query
+          required: false
+          schema: { type: number }
+          description: İl merkez istasyonu yerine kullanılacak boylam (kıyıya yakın nokta için)
+      responses:
+        "200":
+          description: Deniz durumu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/DenizDurumu"
+        "400":
+          description: Geçersiz lat/lon parametresi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: false }
+                  hata: { type: string }
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
   /map/geojson:
     get:
       tags: [harita]
@@ -408,11 +450,7 @@ paths:
       description: >
         5 günlük tahminin en düşük sıcaklığına dayalı sezgisel don/kırağı
         risk sınıflandırması (Kırağı Riski / Hafif-Orta-Kuvvetli-Çok
-        Kuvvetli Don) döner; ayrıca düşük rüzgar (<10 km/h) + yüksek nem
-        (>%60) birlikte görüldüğünde radyatif kırağı için elverişli koşul
-        olduğu `kiragiKosuluUygun` ile ayrıca işaretlenir. MGM'nin resmi
-        bir don uyarı ürünü DEĞİLDİR — 5 günlük sıcaklık tahmininden
-        türetilmiş bir göstergedir.
+        Kuvvetli Don) döner. MGM'nin resmi don uyarısı değildir
       parameters:
         - $ref: "#/components/parameters/IlPath"
         - $ref: "#/components/parameters/IlceQuery"
@@ -486,8 +524,7 @@ paths:
       description: >
         `/guncel`, `/tahmin` ve gün doğumu/batımı verisini tek istekte
         toplayan üst düzey uç nokta. Gün doğumu/batımı verisi ayrı bir dış
-        servisten geldiği için başarısız olursa (sessizce) atlanır; diğer
-        alanlar yine döner.
+        servisten geldiği için başarısız olursa atlanır
       parameters:
         - $ref: "#/components/parameters/IlPath"
         - $ref: "#/components/parameters/IlceQuery"
@@ -572,10 +609,7 @@ components:
       required: false
       description: >
         Belirtilmezse MGM'nin o il için döndürdüğü varsayılan istasyon
-        kullanılır. Not: `/istasyonlar/<il>` MGM'nin kısıtı yüzünden o
-        ilin tüm ilçelerini listeleyemez (MGM bunu desteklemiyor) — geçerli
-        bir ilçe adını zaten biliyorsanız doğrudan burada belirtin, MGM'ye
-        ayrıca sorgulanır.
+        kullanılır.
       schema:
         type: string
         example: Bakirkoy
@@ -612,9 +646,7 @@ components:
       description: >
         `kaynak: "mgm"` normal yanıttır. MGM'ye ulaşılamadığında (circuit
         breaker açık dahil) `kaynak: "open-meteo"` ile ücretsiz, key
-        gerektirmeyen bir yedek servisten gelen veri döner — `durumKodu` bu
-        durumda MGM'nin değil, Open-Meteo'nun WMO kod uzayındandır, ikisi
-        karşılaştırılamaz.
+        gerektirmeyen bir yedek servisten gelen veri döner
       properties:
         istasyonId: { type: integer, example: 17062 }
         sicaklik: { type: number, nullable: true, example: 21.4 }
@@ -821,6 +853,53 @@ components:
         olcumZamani: { type: string, nullable: true }
         kaynak: { type: string, example: "open-meteo (CAMS Avrupa)" }
         aciklama: { type: string }
+
+    DenizDurumu:
+      type: object
+      properties:
+        denizSuyuSicakligi:
+          type: number
+          nullable: true
+          description: "°C; karasal/kapsam dışı konumda null"
+          example: 24.8
+        dalgaYuksekligi:
+          type: number
+          nullable: true
+          description: "metre; karasal/kapsam dışı konumda null"
+          example: 0.8
+        dalgaPeriyodu: { type: number, nullable: true, description: "saniye" }
+        dalgaYonu: { type: number, nullable: true, description: "derece (0-360)" }
+        istasyon:
+          type: object
+          nullable: true
+          description: Sıcaklık Piri Reis'ten geldiyse eşleşen istasyon bilgisi
+          properties:
+            ad: { type: string, example: "İSTANBUL/FLORYA" }
+            il: { type: string, nullable: true }
+            ilce: { type: string, nullable: true }
+            enlem: { type: number }
+            boylam: { type: number }
+        kaynaklar:
+          type: object
+          description: Her alanın hangi kaynaktan geldiğini gösterir.
+          properties:
+            denizSuyuSicakligi:
+              type: string
+              enum: [piri-reis, open-meteo]
+              example: "piri-reis"
+            dalga:
+              type: string
+              enum: [open-meteo]
+              example: "open-meteo"
+        kapsamDisi:
+          type: boolean
+          description: >
+            true ise verilen koordinat ne Piri Reis'in ne de Open-Meteo
+            deniz modelinin kapsamındadır (örn. karasal bir il merkezi)
+            tüm alanlar null olur
+          example: false
+        olcumZamani: { type: string, nullable: true }
+        aciklama: { type: string, nullable: true }
 
     GunAyBilgisi:
       type: object

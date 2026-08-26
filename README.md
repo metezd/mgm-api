@@ -59,7 +59,8 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `GET` | `/hava-kalitesi/<il>` | Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2). İstanbul için İBB verisini önceliklendirir, diğer illerde ücretsiz Open-Meteo Air Quality kullanır. |
 | `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel astronomik formüllerle hesaplanmış Ay Evresi bilgisini döner. |
 | `GET` | `/polen/<il>` | Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin, ambrosia) Open-Meteo/CAMS Avrupa, yalnızca ilgili türün sezonunda ve Avrupa bölgesinde veri döner. Risk seviyeleri yaklaşık sınıflandırmadır |
-| `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. |
+| `GET` | `/deniz/<il>?lat=&lon=` | Anlık deniz suyu sıcaklığı + dalga yüksekliği/periyodu/yönü. Sıcaklık **MGM'nin Piri Reis istasyon verisinden**, başarısız olursa Open-Meteo Marine API'ye düşer. Dalga verisi her zaman Open-Meteo'dan gelir. `kaynaklar` alanı hangi verinin nereden geldiğini gösterir. İkisi de kapsam dışıysa `kapsamDisi: true` ile null döner. Kıyıya daha isabetli bir nokta için `lat`/`lon` verilebilir. |
+| `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. Paralel çalışır. |
 | `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet, Mapbox) için hazır, 81 ilin anlık sıcaklık verisiyle birleştirilmiş saf GeoJSON FeatureCollection döner. |
 | `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**
 | `GET` | `/metrics` | Prometheus formatında sistem metriklerini (cache hit/miss, HTTP süreleri, circuit breaker durumu) döner. |
