@@ -1327,6 +1327,103 @@ class MGMWeather:
         }
         return sonuc
 
+    # Polen ve alerji indeksi (tur_esik_dusuk, tur_esik_orta, tur_esik_yuksek) 
+    # grains/m³ EAN/CAMS tabanlı yaygın kullanılan yaklaşık eşikler
+    # kesin klinik eşikler türe ve bölgeye göre değişebilir, 
+    # bu sınıflandırma genel bir yönlendirme amaçlıdır, tıbbi tavsiye değildir.
+    POLEN_TURLERI = {
+        "grass_pollen": ("cimen", 20, 50, 150),
+        "birch_pollen": ("huş", 30, 90, 500),
+        "alder_pollen": ("kızılağaç", 30, 90, 300),
+        "mugwort_pollen": ("pelin otu", 20, 50, 150),
+        "olive_pollen": ("zeytin", 10, 50, 200),
+        "ragweed_pollen": ("ambrosia", 10, 30, 100),
+    }
+
+    def _polen_seviyesi(self, tur_anahtari: str, deger: float | None) -> str:
+        if deger is None:
+            return "Veri Yok"
+        if deger <= 0:
+            return "Yok"
+        _, dusuk, orta, yuksek = self.POLEN_TURLERI[tur_anahtari]
+        if deger <= dusuk:
+            return "Düşük"
+        if deger <= orta:
+            return "Orta"
+        if deger <= yuksek:
+            return "Yüksek"
+        return "Çok Yüksek"
+
+    def polen_indeksi(self, enlem: float, boylam: float) -> dict[str, Any]:
+        """
+        Anlık polen konsantrasyonlarını ve her tür için
+        basitleştirilmiş risk seviyesini döner. Open-Meteo Air Quality API'sinden beslenir.
+        """
+        params = {
+            "latitude": enlem,
+            "longitude": boylam,
+            "current": ",".join(self.POLEN_TURLERI.keys()),
+            "timezone": "Europe/Istanbul",
+        }
+        cache_key = self._cache_key("open-meteo-polen", params)
+
+        def loader() -> dict[str, Any]:
+            try:
+                resp = self.session.get(
+                    self.OPEN_METEO_AIR_QUALITY_URL, params=params, timeout=self.timeout
+                )
+                resp.raise_for_status()
+                veri = resp.json()["current"]
+            except (requests.RequestException, KeyError, ValueError) as exc:
+                raise MGMWeatherError(
+                    f"Open-Meteo polen servisinden veri alınamadı: {exc}"
+                ) from exc
+
+            turler: dict[str, Any] = {}
+            en_yuksek_seviye_sirasi = 0
+            baskin_tur = None
+            seviye_sirasi = {
+                "Veri Yok": 0,
+                "Yok": 0,
+                "Düşük": 1,
+                "Orta": 2,
+                "Yüksek": 3,
+                "Çok Yüksek": 4,
+            }
+            for anahtar, (tr_adi, _, _, _) in self.POLEN_TURLERI.items():
+                deger = veri.get(anahtar)
+                seviye = self._polen_seviyesi(anahtar, deger)
+                turler[anahtar] = {
+                    "ad": tr_adi,
+                    "deger": deger,
+                    "birim": "Grains/m³",
+                    "seviye": seviye,
+                }
+                sira = seviye_sirasi.get(seviye, 0)
+                if sira > en_yuksek_seviye_sirasi:
+                    en_yuksek_seviye_sirasi = sira
+                    baskin_tur = tr_adi
+
+            return {
+                "turler": turler,
+                "baskinTur": baskin_tur,
+                "genelRiskSeviyesi": next(
+                    (k for k, v in seviye_sirasi.items() if v == en_yuksek_seviye_sirasi),
+                    "Veri Yok",
+                ),
+                "olcumZamani": veri.get("time"),
+                "kaynak": "open-meteo (CAMS Avrupa)",
+                "aciklama": (
+                    "Seviyeler EAN/CAMS tabanlı yaklaşık sınıflandırmadır, "
+                    "kesin klinik eşik değildir. CAMS yalnızca Avrupa "
+                    "bölgesini ve ilgili türün sezonunu kapsar."
+                ),
+            }
+
+        return self._cached_get(
+            cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
+        )
+
     # Günlük tahmin (5 günlük)
     def _tahmin_ttl(self) -> float:
         if self.cache_ttl_seconds <= 0:

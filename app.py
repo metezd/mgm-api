@@ -32,6 +32,13 @@ Uç noktalar:
            (sunrise-sunset.org) ve ay evresi. /hava-durumu yanıtına da
            "ayEvresi" alanı olarak otomatik eklenir.
 
+    GET /polen/<il>?ilce=<ilce>
+        -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
+           zeytin, ambrosia). Open-Meteo Air Quality API
+           üzerinden sezon dışı türler için "Veri Yok"
+           döner. Seviyeler (Düşük/Orta/Yüksek/Çok Yüksek) yaklaşık
+           sınıflandırmadır
+
     GET /map/geojson
         -> Türkiye il sınırları (GeoJSON) + MGM son durum sıcaklıkları
            birleştirilmiş, doğrudan Leaflet/Mapbox'a beslenebilecek
@@ -540,6 +547,27 @@ def gun_ay_bilgisi(il: str):
         veri: dict = {}
         veri.update(mgm.gun_dogumu_batimi(float(enlem), float(boylam)))
         veri["ayEvresi"] = mgm.ay_evresi()
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
+@app.get("/polen/<il>")
+def polen(il: str):
+    """
+    Open-Meteo Air Quality API (CAMS Avrupa) üzerinden
+    sadece ilgili türün sezonunda ve modelin kapsadığı konumlarda veri
+    döner
+    """
+    ilce = request.args.get("ilce")
+    try:
+        _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+        if enlem is None or boylam is None:
+            raise MGMWeatherError(
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                "polen indeksi koordinat gerektirir."
+            )
+        veri = mgm.polen_indeksi(float(enlem), float(boylam))
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)

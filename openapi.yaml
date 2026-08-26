@@ -346,6 +346,36 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /polen/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Polen / alerji indeksi
+      description: >
+        Anlık polen konsantrasyonu (çimen, huş, kızılağaç, pelin otu,
+        zeytin, ambrosia) ve her tür için basitleştirilmiş risk seviyesi
+        (Yok/Düşük/Orta/Yüksek/Çok Yüksek) döner. Open-Meteo Air Quality
+        API'sinden (CAMS Avrupa modeli, key gerektirmez) beslenir; CAMS
+        polen verisi yalnızca Avrupa bölgesini ve ilgili türün sezonunu
+        kapsadığından, kapsam dışı türler için değer null ve
+        seviye "Veri Yok" döner. Risk seviyeleri EAN/CAMS tabanlı
+        yaklaşık sınıflandırmadır, kesin klinik eşik değildir.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Polen indeksi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/PolenIndeksi"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
   /map/geojson:
     get:
       tags: [harita]
@@ -753,6 +783,43 @@ components:
                   Düşük rüzgar (<10 km/h) + yüksek nem (>%60) birlikte
                   görüldüğünde radyatif kırağı için elverişli koşul
                 example: true
+        aciklama: { type: string }
+
+    PolenIndeksi:
+      type: object
+      description: >
+        EAN/CAMS tabanlı yaklaşık sınıflandırmadır, kesin klinik eşik
+        değildir. CAMS yalnızca Avrupa bölgesini ve ilgili türün
+        sezonunu kapsar.
+      properties:
+        turler:
+          type: object
+          description: Anahtar polen türü (örn. grass_pollen); değer detay nesnesi.
+          additionalProperties:
+            type: object
+            properties:
+              ad: { type: string, example: "cimen" }
+              deger:
+                type: number
+                nullable: true
+                description: Grains/m³ (kapsam/sezon dışıysa null)
+                example: 65
+              birim: { type: string, example: "Grains/m³" }
+              seviye:
+                type: string
+                enum: [Veri Yok, Yok, Düşük, Orta, Yüksek, Çok Yüksek]
+                example: "Yüksek"
+        baskinTur:
+          type: string
+          nullable: true
+          description: En yüksek risk seviyesindeki tür (Türkçe adı)
+          example: "cimen"
+        genelRiskSeviyesi:
+          type: string
+          enum: [Veri Yok, Yok, Düşük, Orta, Yüksek, Çok Yüksek]
+          example: "Yüksek"
+        olcumZamani: { type: string, nullable: true }
+        kaynak: { type: string, example: "open-meteo (CAMS Avrupa)" }
         aciklama: { type: string }
 
     GunAyBilgisi:

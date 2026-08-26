@@ -52,15 +52,16 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 
 | HTTP Metodu | Endpoint | Açıklama |
 | :--- | :--- | :--- |
-| `GET` | `/hava-durumu/<il>` | Belirtilen ilin (ve opsiyonel `?ilce=`) anlık durumu ve 5 günlük tahmini. |
+| `GET` | `/hava-durumu/<il>` | Belirtilen ilin (ve `?ilce=`) anlık durumu ve 5 günlük tahmini. |
 | `GET` | `/ara?q=...` | Hatalı/karmaşık girdi toleranslı akıllı arama. `"kadikoy/istanbul"` veya `"maslak itü"` gibi metinleri çözümler. |
 | `GET` | `/uyarilar?il=...` | MGM'nin aktif meteorolojik (sarı/turuncu/kırmızı kodlu) uyarı kartlarını getirir. |
 | `GET` | `/konum?lat=...&lon=...` | Koordinattan veri bulma. Önce MGM'yi dener, sistem çökmüşse otomatik olarak Open-Meteo'ya fallback yapar. |
 | `GET` | `/hava-kalitesi/<il>` | Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2). İstanbul için İBB verisini önceliklendirir, diğer illerde ücretsiz Open-Meteo Air Quality kullanır. |
 | `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel astronomik formüllerle hesaplanmış Ay Evresi bilgisini döner. |
-| `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. Paralel çalışır. |
+| `GET` | `/polen/<il>` | Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin, ambrosia) Open-Meteo/CAMS Avrupa, yalnızca ilgili türün sezonunda ve Avrupa bölgesinde veri döner. Risk seviyeleri yaklaşık sınıflandırmadır |
+| `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. |
 | `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet, Mapbox) için hazır, 81 ilin anlık sıcaklık verisiyle birleştirilmiş saf GeoJSON FeatureCollection döner. |
-| `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**, türetilmiş bir göstergedir. |
+| `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**
 | `GET` | `/metrics` | Prometheus formatında sistem metriklerini (cache hit/miss, HTTP süreleri, circuit breaker durumu) döner. |
 
 ## Daha fazlası
