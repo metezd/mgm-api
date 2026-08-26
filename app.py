@@ -62,13 +62,25 @@ Uç noktalar:
            MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
            göstergedir.
 
+Rate limiting:
+    IP başına APP_RATE_LIMIT_MAX_REQUESTS (varsayılan 60) istek /
+    APP_RATE_LIMIT_WINDOW_SECONDS (varsayılan 60sn). /map/geojson soğuk
+    cache'te 81 il için paralel istek attığından ayrı ve daha sıkı bir
+    limite (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS, varsayılan 10) tabidir.
+    Redis yapılandırılmışsa (REDIS_URL) sayaç Redis'te tutulur ve tüm
+    worker/instance'lar arasında paylaşılır; Redis yoksa/erişilemezse
+    süreç-içi belleğe düşülür (tek worker'da doğru, çoklu worker'da
+    worker başına ayrı sayılır).
+
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import random
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -80,6 +92,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
 app = Flask(__name__)
+logger = logging.getLogger(__name__)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # gzip/br response compression.
@@ -138,6 +151,11 @@ mgm = MGMWeather(
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
+# /map/geojson soğuk cache'te 81 il için paralel istek attığından
+# (bkz. mgm.harita_geojson) genel limitten ayrı ve daha sıkı bir limite tabidir
+MAP_GEOJSON_RATE_LIMIT_MAX = int(
+    os.getenv("APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS", "10")
+)
 TOPLU_MAX_SORGU = int(os.getenv("APP_TOPLU_MAX_SORGU", "20"))
 
 HTTP_ISTEK_SAYAC = Counter(
@@ -152,7 +170,69 @@ RATE_LIMIT_RED_SAYAC = Counter(
 CIRCUIT_BREAKER_DURUM_GAUGE = Gauge(
     "mgm_circuit_breaker_state", "0=kapali 1=yari-acik 2=acik (scrape anında okunur)"
 )
-RATE_LIMIT_BUCKETS = defaultdict(deque)
+
+
+RATE_LIMIT_BUCKETS: dict[str, deque] = defaultdict(deque)
+RATE_LIMIT_BUCKETS_MAX_IZLENEN = int(
+    os.getenv("APP_RATE_LIMIT_MAX_TRACKED_IPS", "50000")
+)
+
+
+def _rate_limit_bellek_temizle() -> None:
+    """Boşalmış (pencere dışına çıkmış) bucket'ları dict'ten siler.
+    Her istekte değil, dict büyüdüğünde ve düşük olasılıkla çağrılır."""
+    if len(RATE_LIMIT_BUCKETS) <= RATE_LIMIT_BUCKETS_MAX_IZLENEN:
+        return
+    bos_anahtarlar = [k for k, v in RATE_LIMIT_BUCKETS.items() if not v]
+    for k in bos_anahtarlar:
+        del RATE_LIMIT_BUCKETS[k]
+
+
+def _rate_limit_kontrol(
+    ip: str, kapsam: str, limit: int, window_seconds: int
+) -> tuple[bool, int, int]:
+    """
+    (izin_verildi_mi, kalan_hak, reset_epoch) döner.
+
+    Redis yapılandırılmış ve erişilebilirse INCR+EXPIRE tabanlı sabit
+    pencere sayaç kullanılır (mgm.redis_client ile paylaşılan bağlantı)
+    bu sayede birden fazla instance aynı limiti paylaşır. Redis
+    yoksa veya o an erişilemezse, isteği reddetmek yerine 
+    kaydırmalı pencereye (deque) düşülür.
+    """
+    if mgm._redis_available and mgm.redis_client is not None:
+        try:
+            pencere = int(time.time() // window_seconds)
+            redis_key = f"{mgm.redis_prefix}ratelimit:{kapsam}:{ip}:{pencere}"
+            pipe = mgm.redis_client.pipeline()
+            pipe.incr(redis_key)
+            pipe.expire(redis_key, window_seconds)
+            sayac, _ = pipe.execute()
+            reset_epoch = (pencere + 1) * window_seconds
+            kalan = max(0, limit - int(sayac))
+            return int(sayac) <= limit, kalan, reset_epoch
+        except mgm._redis_error_cls:
+            logger.warning(
+                "Rate limit için Redis'e erişilemedi, süreç-içi belleğe düşülüyor."
+            )
+            # aşağıya düş
+
+    now = time.monotonic()
+    bucket_anahtari = f"{kapsam}:{ip}"
+    bucket = RATE_LIMIT_BUCKETS[bucket_anahtari]
+    while bucket and now - bucket[0] > window_seconds:
+        bucket.popleft()
+
+    kalan_sure = max(0.0, window_seconds - (now - bucket[0])) if bucket else 0.0
+    reset_epoch = int(time.time() + kalan_sure)
+
+    if len(bucket) >= limit:
+        return False, 0, reset_epoch
+
+    bucket.append(now)
+    if random.random() < 0.01:  # ~her 100 istekte bir fırsatçı temizlik
+        _rate_limit_bellek_temizle()
+    return True, max(0, limit - len(bucket)), reset_epoch
 
 
 def _hata_yanit(exc: Exception, kod: int = 502):
@@ -196,24 +276,24 @@ def rate_limit():
         return None
 
     ip = request.remote_addr or "unknown"
-    now = time.monotonic()
-    bucket = RATE_LIMIT_BUCKETS[ip]
     window_seconds = max(1, RATE_LIMIT_WINDOW)
-    limit = max(1, RATE_LIMIT_MAX)
-    while bucket and now - bucket[0] > window_seconds:
-        bucket.popleft()
-
-    if bucket:
-        kalan_sure = max(0.0, window_seconds - (now - bucket[0]))
+    if request.path == "/map/geojson":
+        limit = max(1, MAP_GEOJSON_RATE_LIMIT_MAX)
+        kapsam = "map-geojson"
     else:
-        kalan_sure = 0.0
-    g.rl_limit = limit
-    g.rl_reset_epoch = int(time.time() + kalan_sure)
+        limit = max(1, RATE_LIMIT_MAX)
+        kapsam = "genel"
 
-    if len(bucket) >= limit:
-        g.rl_remaining = 0
+    izin_verildi, kalan, reset_epoch = _rate_limit_kontrol(
+        ip, kapsam, limit, window_seconds
+    )
+    g.rl_limit = limit
+    g.rl_remaining = kalan
+    g.rl_reset_epoch = reset_epoch
+
+    if not izin_verildi:
         RATE_LIMIT_RED_SAYAC.inc()
-        retry_after = max(1, window_seconds)
+        retry_after = max(1, reset_epoch - int(time.time()))
         response = jsonify({
             "basarili": False,
             "hata": "Çok fazla istek gönderdiniz. Lütfen birkaç saniye sonra tekrar deneyin.",
@@ -221,8 +301,6 @@ def rate_limit():
         response.status_code = 429
         response.headers["Retry-After"] = str(retry_after)
         return response
-    bucket.append(now)
-    g.rl_remaining = max(0, limit - len(bucket))
 
 
 @app.after_request

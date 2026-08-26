@@ -65,6 +65,14 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**
 | `GET` | `/metrics` | Prometheus formatında sistem metriklerini (cache hit/miss, HTTP süreleri, circuit breaker durumu) döner. |
 
+Rate Limiting (İstek Sınırlandırması)
+-----------------------------------
+- Varsayılan Limit: IP başına 60 istek / 60 saniye (APP_RATE_LIMIT_MAX_REQUESTS / APP_RATE_LIMIT_WINDOW_SECONDS).
+- Harita Limiti: /map/geojson daha sıkı ve ayrı bir limite tabidir (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS).
+- Depolama & Fallback: REDIS_URL varsa sayaçlar Redis'te tutulur ve tüm instance'lar arasında paylaşılır. Redis yoksa in-memory belleğe düşer.
+- Header'lar: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset.
+- Limit Aşımı: HTTP 429 Too Many Requests + Retry-After header
+
 ## Daha fazlası
 
 - [docs/development.md](docs/development.md)
