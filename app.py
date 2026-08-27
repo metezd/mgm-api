@@ -32,6 +32,11 @@ Uç noktalar:
            (sunrise-sunset.org) ve ay evresi. /hava-durumu yanıtına da
            "ayEvresi" alanı olarak otomatik eklenir.
 
+    GET /sondurum/en-dusuk-sicakliklar?tarih=YYYY-MM-DD
+    GET /sondurum/en-yuksek-sicakliklar?tarih=YYYY-MM-DD
+        -> Türkiye geneli, tüm istasyonlar için gerçekleşen en düşük/
+           en yüksek sıcaklıklar. tarih verilmezse en güncel gün.
+
     GET /polen/<il>?ilce=<ilce>
         -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
            zeytin, ambrosia). Open-Meteo Air Quality API (CAMS Avrupa)
@@ -173,6 +178,7 @@ mgm = MGMWeather(
         os.getenv("MGM_HARITA_SICAKLIK_TTL_SANIYE", "600")
     ),
     deniz_ttl_saniye=int(os.getenv("MGM_DENIZ_TTL_SANIYE", "1800")),
+    sondurum_ttl_saniye=int(os.getenv("MGM_SONDURUM_TTL_SANIYE", "1800")),
     piri_reis_ttl_saniye=int(os.getenv("MGM_PIRI_REIS_TTL_SANIYE", "1800")),
     piri_reis_max_mesafe_km=float(os.getenv("MGM_PIRI_REIS_MAX_MESAFE_KM", "60")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
@@ -892,6 +898,26 @@ def gun_ay_bilgisi(il: str):
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)
+
+
+@app.get("/sondurum/en-dusuk-sicakliklar")
+def sondurum_en_dusuk():
+    tarih = request.args.get("tarih")
+    try:
+        veri = mgm.en_dusuk_sicakliklar(tarih)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
+@app.get("/sondurum/en-yuksek-sicakliklar")
+def sondurum_en_yuksek():
+    tarih = request.args.get("tarih")
+    try:
+        veri = mgm.en_yuksek_sicakliklar(tarih)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
 
 
 @app.get("/polen/<il>")

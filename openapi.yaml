@@ -487,6 +487,48 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /sondurum/en-dusuk-sicakliklar:
+    get:
+      tags: [hava-durumu]
+      summary: Türkiye geneli gerçekleşen en düşük sıcaklıklar
+      parameters:
+        - name: tarih
+          in: query
+          required: false
+          schema: { type: string, example: "2026-08-26" }
+      responses:
+        "200":
+          description: Tarih + kayıt listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/SondurumSicaklikListesi"
+
+  /sondurum/en-yuksek-sicakliklar:
+    get:
+      tags: [hava-durumu]
+      summary: Türkiye geneli gerçekleşen en yüksek sıcaklıklar
+      parameters:
+        - name: tarih
+          in: query
+          required: false
+          schema: { type: string, example: "2026-08-26" }
+      responses:
+        "200":
+          description: Tarih + kayıt listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/SondurumSicaklikListesi"
+
   /polen/{il}:
     get:
       tags: [hava-durumu]
@@ -1130,6 +1172,20 @@ components:
       properties:
         basarili: { type: boolean, example: false }
         hata: { type: string, example: "'Xyz' için istasyon bulunamadı." }
+
+    SondurumSicaklikListesi:
+      type: object
+      properties:
+        tarih: { type: string, example: "2026-08-26" }
+        kayitlar:
+          type: array
+          items:
+            type: object
+            properties:
+              il: { type: string }
+              ilce: { type: string }
+              istAd: { type: string }
+              deger: { type: number }
 
     FavoriKaydi:
       type: object

@@ -358,6 +358,9 @@ class MGMWeather:
     harita_sicaklik_ttl_saniye: int = 600
     # Deniz durumu hava sıcaklığından daha yavaş değişir = daha uzun TTL
     deniz_ttl_saniye: int = 1800
+    # Türkiye geneli en yüksek/en düşük sıcaklık tabloları günde birkaç
+    # kez güncellenir, uzunca bir TTL yeterli
+    sondurum_ttl_saniye: int = 1800
     piri_reis_ttl_saniye: int = 1800
     # verilen koordinata en yakın istasyon mesafeden uzaksa çalışmıyo kabul edilip Open-Meteo'ya düşülür
     piri_reis_max_mesafe_km: float = 60.0
@@ -1385,6 +1388,34 @@ class MGMWeather:
         return self._cached_get(
             cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
         )
+
+    def _sondurum_tarihler(self) -> list[str]:
+        # tarih seçenekleri (son ~5 gün), en güncel data[0]
+        return self._cached_get(
+            self._cache_key("sondurum-tarih"),
+            lambda: self._get("sondurumlar/minimumMaxTarih"),
+            ttl_override=self.sondurum_ttl_saniye,
+        )
+
+    def _sondurum_sicaklik(self, path: str, tarih: str | None) -> dict[str, Any]:
+        if not tarih:
+            tarihler = self._sondurum_tarihler()
+            tarih = tarihler[0][:10]
+        veri = self._cached_get(
+            self._cache_key(f"sondurum-{path}", {"tarih": tarih}),
+            lambda: self._get(path, {"tarih": tarih}),
+            ttl_override=self.sondurum_ttl_saniye,
+        )
+        kayitlar = [k for k in veri if k.get("istAd") is not None]
+        return {"tarih": tarih, "kayitlar": kayitlar}
+
+    def en_dusuk_sicakliklar(self, tarih: str | None = None) -> dict[str, Any]:
+        # Türkiye geneli, tüm istasyonlar - gerçekleşen en düşük sıcaklıklar
+        return self._sondurum_sicaklik("sondurumlar/endusuk", tarih)
+
+    def en_yuksek_sicakliklar(self, tarih: str | None = None) -> dict[str, Any]:
+        # endusuk ile aynı yapı, servis path isim simetrisiyle varsayıldı
+        return self._sondurum_sicaklik("sondurumlar/enyuksek", tarih)
 
     def hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
