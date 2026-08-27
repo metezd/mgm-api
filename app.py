@@ -208,6 +208,14 @@ RATE_LIMIT_BUCKETS_MAX_IZLENEN = int(
 )
 
 
+def _mgm_redis_durumu():
+    musait = bool(getattr(mgm, "_redis_available", False))
+    client = getattr(mgm, "redis_client", None)
+    prefix = getattr(mgm, "redis_prefix", "mgm-cache:")
+    hata_sinifi = getattr(mgm, "_redis_error_cls", None) or Exception
+    return (musait and client is not None), client, prefix, hata_sinifi
+
+
 def _rate_limit_bellek_temizle() -> None:
     """Boşalmış (pencere dışına çıkmış) bucket'ları dict'ten siler.
     Her istekte değil, dict büyüdüğünde ve düşük olasılıkla çağrılır."""
@@ -230,18 +238,19 @@ def _rate_limit_kontrol(
     yoksa veya o an erişilemezse, isteği reddetmek yerine 
     kaydırmalı pencereye (deque) düşülür.
     """
-    if mgm._redis_available and mgm.redis_client is not None:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
         try:
             pencere = int(time.time() // window_seconds)
-            redis_key = f"{mgm.redis_prefix}ratelimit:{kapsam}:{ip}:{pencere}"
-            pipe = mgm.redis_client.pipeline()
+            redis_key = f"{redis_prefix}ratelimit:{kapsam}:{ip}:{pencere}"
+            pipe = redis_client.pipeline()
             pipe.incr(redis_key)
             pipe.expire(redis_key, window_seconds)
             sayac, _ = pipe.execute()
             reset_epoch = (pencere + 1) * window_seconds
             kalan = max(0, limit - int(sayac))
             return int(sayac) <= limit, kalan, reset_epoch
-        except mgm._redis_error_cls:
+        except redis_hata_sinifi:
             logger.warning(
                 "Rate limit için Redis'e erişilemedi, süreç-içi belleğe düşülüyor."
             )
@@ -286,8 +295,8 @@ def _favori_liste_id_gecerli(liste_id: str) -> bool:
     return bool(FAVORI_LISTE_ID_REGEX.match(liste_id))
 
 
-def _favori_redis_key(liste_id: str) -> str:
-    return f"{mgm.redis_prefix}favoriler:{liste_id}"
+def _favori_redis_key(liste_id: str, prefix: str) -> str:
+    return f"{prefix}favoriler:{liste_id}"
 
 
 def _favori_kayit_olustur(sorgu: str) -> dict:
@@ -310,21 +319,22 @@ def _favori_ekle(liste_id: str, sorgu: str) -> dict:
     slug = sorgu.lower()
     kayit = _favori_kayit_olustur(sorgu)
 
-    if mgm._redis_available and mgm.redis_client is not None:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
         try:
-            key = _favori_redis_key(liste_id)
+            key = _favori_redis_key(liste_id, redis_prefix)
             mevcut_alanlar = {
                 a.decode() if isinstance(a, bytes) else a
-                for a in mgm.redis_client.hkeys(key)
+                for a in redis_client.hkeys(key)
             }
             if slug not in mevcut_alanlar and len(mevcut_alanlar) >= FAVORI_MAX_KAYIT:
                 raise FavoriHatasi(
                     f"Bu listede en fazla {FAVORI_MAX_KAYIT} kayıt olabilir."
                 )
-            mgm.redis_client.hset(key, slug, json.dumps(kayit, ensure_ascii=False))
-            mgm.redis_client.expire(key, FAVORI_TTL_SANIYE)
+            redis_client.hset(key, slug, json.dumps(kayit, ensure_ascii=False))
+            redis_client.expire(key, FAVORI_TTL_SANIYE)
             return kayit
-        except mgm._redis_error_cls:
+        except redis_hata_sinifi:
             logger.warning(
                 "Favori eklenemedi, bellek içi depolamaya düşülüyor."
             )
@@ -339,12 +349,13 @@ def _favori_ekle(liste_id: str, sorgu: str) -> dict:
 
 def _favori_sil(liste_id: str, sorgu: str) -> bool:
     slug = sorgu.strip().lower()
-    if mgm._redis_available and mgm.redis_client is not None:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
         try:
-            key = _favori_redis_key(liste_id)
-            silindi = mgm.redis_client.hdel(key, slug)
+            key = _favori_redis_key(liste_id, redis_prefix)
+            silindi = redis_client.hdel(key, slug)
             return bool(silindi)
-        except mgm._redis_error_cls:
+        except redis_hata_sinifi:
             logger.warning(
                 "Favori silinemedi, bellek içi depolamaya düşülüyor."
             )
@@ -358,10 +369,11 @@ def _favori_sil(liste_id: str, sorgu: str) -> bool:
 
 
 def _favori_listele(liste_id: str) -> list[dict]:
-    if mgm._redis_available and mgm.redis_client is not None:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
         try:
-            key = _favori_redis_key(liste_id)
-            ham = mgm.redis_client.hgetall(key)
+            key = _favori_redis_key(liste_id, redis_prefix)
+            ham = redis_client.hgetall(key)
             sonuc = []
             for deger in ham.values():
                 try:
@@ -369,7 +381,7 @@ def _favori_listele(liste_id: str) -> list[dict]:
                 except (json.JSONDecodeError, TypeError):
                     continue
             return sorted(sonuc, key=lambda k: k.get("eklenmeTarihi") or "")
-        except mgm._redis_error_cls:
+        except redis_hata_sinifi:
             logger.warning(
                 "Favoriler listelenemedi, bellek içi depolama okunuyor."
             )
