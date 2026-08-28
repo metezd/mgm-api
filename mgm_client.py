@@ -1389,33 +1389,38 @@ class MGMWeather:
             cache_key, loader, ttl_override=self.hava_kalitesi_ttl_saniye
         )
 
-    def _sondurum_tarihler(self) -> list[str]:
+    def _sondurum_tarihler(self, tarih_path: str) -> list[str]:
         # tarih seçenekleri (son ~5 gün), en güncel data[0]
         return self._cached_get(
-            self._cache_key("sondurum-tarih"),
-            lambda: self._get("sondurumlar/minimumMaxTarih"),
+            self._cache_key(f"sondurum-tarih-{tarih_path}"),
+            lambda: self._get(tarih_path),
             ttl_override=self.sondurum_ttl_saniye,
         )
 
-    def _sondurum_sicaklik(self, path: str, tarih: str | None) -> dict[str, Any]:
+    def _sondurum_sicaklik(
+        self, veri_path: str, tarih_path: str, tarih: str | None
+    ) -> dict[str, Any]:
         if not tarih:
-            tarihler = self._sondurum_tarihler()
+            tarihler = self._sondurum_tarihler(tarih_path)
             tarih = tarihler[0][:10]
         veri = self._cached_get(
-            self._cache_key(f"sondurum-{path}", {"tarih": tarih}),
-            lambda: self._get(path, {"tarih": tarih}),
+            self._cache_key(f"sondurum-{veri_path}", {"tarih": tarih}),
+            lambda: self._get(veri_path, {"tarih": tarih}),
             ttl_override=self.sondurum_ttl_saniye,
         )
         kayitlar = [k for k in veri if k.get("istAd") is not None]
         return {"tarih": tarih, "kayitlar": kayitlar}
 
     def en_dusuk_sicakliklar(self, tarih: str | None = None) -> dict[str, Any]:
-        # Türkiye geneli, tüm istasyonlar - gerçekleşen en düşük sıcaklıklar
-        return self._sondurum_sicaklik("sondurumlar/endusuk", tarih)
+        return self._sondurum_sicaklik(
+            "sondurumlar/endusuk", "sondurumlar/minimumMaxTarih", tarih
+        )
 
     def en_yuksek_sicakliklar(self, tarih: str | None = None) -> dict[str, Any]:
-        # endusuk ile aynı yapı, servis path isim simetrisiyle varsayıldı
-        return self._sondurum_sicaklik("sondurumlar/enyuksek", tarih)
+        # min ile ayrı tarih servisi kullanır (maximumMaxTarih)
+        return self._sondurum_sicaklik(
+            "sondurumlar/enyuksek", "sondurumlar/maximumMaxTarih", tarih
+        )
 
     def hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
