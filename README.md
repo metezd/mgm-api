@@ -62,6 +62,9 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `GET` | `/deniz/<il>?lat=&lon=` | Anlık deniz suyu sıcaklığı + dalga yüksekliği/periyodu/yönü. Sıcaklık **MGM'nin Piri Reis istasyon verisinden**, başarısız olursa Open-Meteo Marine API'ye düşer. Dalga verisi her zaman Open-Meteo'dan gelir. `kaynaklar` alanı hangi verinin nereden geldiğini gösterir. İkisi de kapsam dışıysa `kapsamDisi: true` ile null döner. Kıyıya daha isabetli bir nokta için `lat`/`lon` verilebilir. |
 | `GET` | `/sondurum/en-dusuk-sicakliklar?tarih=` | Türkiye geneli, tüm istasyonlarda gerçekleşen en düşük sıcaklıklar. `tarih` verilmezse en güncel gün. |
 | `GET` | `/sondurum/en-yuksek-sicakliklar?tarih=` | Aynısı, en yüksek sıcaklıklar için. |
+| `GET` | `/sondurum/toplam-yagis?tarih=` | Türkiye geneli gerçekleşen toplam yağış (mm). |
+| `GET` | `/sondurum/kar-kalinliklari` | Türkiye geneli anlık kar yüksekliği (cm). |
+| `GET` | `/sondurum/son-gozlemler` | İl merkezlerinde anlık ölçüm (sıcaklık, nem, yağış, rüzgar, basınç, hadise). |
 | `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. Paralel çalışır. |
 | `POST/DELETE` | `/favoriler/<liste_id>` | Favori il/ilçe ekle/sil (`{"sorgu": "kadikoy/istanbul"}`). Hesap/kimlik doğrulama **yoktur** — `liste_id`'yi istemci kendi seçer/üretir. Onu bilen herkes listeyi düzenler. Liste başına en fazla `APP_FAVORI_MAX_KAYIT` kayıt. |
 | `GET` | `/favoriler/<liste_id>` | Listedeki tüm favoriler için hava durumunu `/toplu` ile aynı mantıkla (paralel, kısmi başarısızlığa toleranslı) tek istekte döner. |

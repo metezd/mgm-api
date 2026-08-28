@@ -37,6 +37,16 @@ Uç noktalar:
         -> Türkiye geneli, tüm istasyonlar için gerçekleşen en düşük/
            en yüksek sıcaklıklar. tarih verilmezse en güncel gün.
 
+    GET /sondurum/toplam-yagis?tarih=YYYY-MM-DD
+        -> Türkiye geneli toplam yağış ,tarih verilmezse en güncel gün.
+
+    GET /sondurum/kar-kalinliklari
+        -> Türkiye geneli anlık kar yüksekliği, tarih parametresi yok.
+
+    GET /sondurum/son-gozlemler
+        -> İl merkezlerinde anlık ölçüm (sıcaklık, nem, yağış, rüzgar,
+           basınç, hadise).
+
     GET /polen/<il>?ilce=<ilce>
         -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
            zeytin, ambrosia). Open-Meteo Air Quality API (CAMS Avrupa)
@@ -915,6 +925,34 @@ def sondurum_en_yuksek():
     tarih = request.args.get("tarih")
     try:
         veri = mgm.en_yuksek_sicakliklar(tarih)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
+@app.get("/sondurum/toplam-yagis")
+def sondurum_toplam_yagis():
+    tarih = request.args.get("tarih")
+    try:
+        veri = mgm.toplam_yagislar(tarih)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
+@app.get("/sondurum/kar-kalinliklari")
+def sondurum_kar():
+    try:
+        veri = mgm.kar_kalinliklari()
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 502)
+
+
+@app.get("/sondurum/son-gozlemler")
+def sondurum_son_gozlemler():
+    try:
+        veri = mgm.son_gozlemler()
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 502)

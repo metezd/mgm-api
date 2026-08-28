@@ -1422,6 +1422,47 @@ class MGMWeather:
             "sondurumlar/enyuksek", "sondurumlar/maximumMaxTarih", tarih
         )
 
+    def toplam_yagislar(self, tarih: str | None = None) -> dict[str, Any]:
+        # deger burada mm yağış, ayrı tarih servisi (yagisMaxTarih)
+        return self._sondurum_sicaklik(
+            "sondurumlar/toplamyagis", "sondurumlar/yagisMaxTarih", tarih
+        )
+
+    def kar_kalinliklari(self) -> dict[str, Any]:
+        # anlık, tarih parametresi yok; deger alanı yerine karYukseklik
+        veri = self._cached_get(
+            self._cache_key("sondurum-kar"),
+            lambda: self._get("sondurumlar/kar"),
+            ttl_override=self.sondurum_ttl_saniye,
+        )
+        kayitlar = [k for k in veri if k.get("istAd") is not None]
+        return {"kayitlar": kayitlar}
+
+    def son_gozlemler(self) -> dict[str, Any]:
+        # sondurumlar/ilmerkezleri sadece istNo döner. il adı için
+        # merkezler/iller ile eşleştirip TURKIYE_ILLERI plaka->il çözülür
+        iller = self._cached_get(
+            self._cache_key("merkezler-iller"),
+            lambda: self._get("merkezler/iller"),
+            ttl_override=self.sondurum_ttl_saniye,
+        )
+        istno_plaka = {
+            i.get("sondurumIstNo"): i.get("ilPlaka")
+            for i in iller
+            if i.get("sondurumIstNo")
+        }
+        plaka_il = {k["plakaKodu"]: k["il"] for k in TURKIYE_ILLERI}
+        veri = self._cached_get(
+            self._cache_key("sondurum-ilmerkezleri"),
+            lambda: self._get("sondurumlar/ilmerkezleri"),
+            ttl_override=self.sondurum_ttl_saniye,
+        )
+        kayitlar = []
+        for k in veri:
+            plaka = istno_plaka.get(k.get("istNo"))
+            kayitlar.append({**k, "il": plaka_il.get(plaka)})
+        return {"kayitlar": kayitlar}
+
     def hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
 
