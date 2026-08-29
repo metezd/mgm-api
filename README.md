@@ -52,41 +52,41 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 
 | HTTP Metodu | Endpoint | Açıklama |
 | :--- | :--- | :--- |
-| `GET` | `/hava-durumu/<il>` | Belirtilen ilin (ve `?ilce=`) anlık durumu ve 5 günlük tahmini. |
-| `GET` | `/ara?q=...` | Hatalı/karmaşık girdi toleranslı akıllı arama. `"kadikoy/istanbul"` veya `"maslak itü"` gibi metinleri çözümler. |
-| `GET` | `/uyarilar?il=...` | MGM'nin aktif meteorolojik (sarı/turuncu/kırmızı kodlu) uyarı kartlarını getirir. |
-| `GET` | `/konum?lat=...&lon=...` | Koordinattan veri bulma. Önce MGM'yi dener, sistem çökmüşse otomatik olarak Open-Meteo'ya fallback yapar. |
-| `GET` | `/hava-kalitesi/<il>` | Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2). İstanbul için İBB verisini önceliklendirir, diğer illerde ücretsiz Open-Meteo Air Quality kullanır. |
-| `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel astronomik formüllerle hesaplanmış Ay Evresi bilgisini döner. |
-| `GET` | `/polen/<il>` | Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin, ambrosia) Open-Meteo/CAMS Avrupa, yalnızca ilgili türün sezonunda ve Avrupa bölgesinde veri döner. Risk seviyeleri yaklaşık sınıflandırmadır |
-| `GET` | `/deniz/<il>?lat=&lon=` | Anlık deniz suyu sıcaklığı + dalga yüksekliği/periyodu/yönü. Sıcaklık **MGM'nin Piri Reis istasyon verisinden**, başarısız olursa Open-Meteo Marine API'ye düşer. Dalga verisi her zaman Open-Meteo'dan gelir. `kaynaklar` alanı hangi verinin nereden geldiğini gösterir. İkisi de kapsam dışıysa `kapsamDisi: true` ile null döner. Kıyıya daha isabetli bir nokta için `lat`/`lon` verilebilir. |
-| `GET` | `/sondurum/en-dusuk-sicakliklar?tarih=` | Türkiye geneli, tüm istasyonlarda gerçekleşen en düşük sıcaklıklar. `tarih` verilmezse en güncel gün. |
+| `GET` | `/hava-durumu/<il>` | İlin (ve `?ilce=`) anlık durumu ve 5 günlük tahmini. |
+| `GET` | `/ara?q=...` | Hatalı/karmaşık girdi toleranslı akıllı arama. `"kadikoy/istanbul"` gibi metinleri çözer. |
+| `GET` | `/uyarilar?il=...` | MGM'nin aktif sarı/turuncu/kırmızı kodlu uyarı kartları. |
+| `GET` | `/konum?lat=...&lon=...` | Koordinattan veri bulma. Önce MGM, çökerse otomatik Open-Meteo. |
+| `GET` | `/hava-kalitesi/<il>` | Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2). İstanbul'da İBB verisi önceliklidir, diğer illerde Open-Meteo Air Quality kullanılır. |
+| `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel formülle hesaplanmış Ay Evresi. |
+| `GET` | `/polen/<il>` | Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin, ambrosia). Open-Meteo/CAMS Avrupa, yalnızca sezonunda ve Avrupa bölgesinde veri döner. Risk seviyeleri yaklaşık sınıflandırmadır. |
+| `GET` | `/deniz/<il>?lat=&lon=` | Deniz suyu sıcaklığı + dalga yüksekliği/periyodu/yönü. Sıcaklık öncelikle Piri Reis istasyon verisinden, olmazsa Open-Meteo Marine'den gelir. Dalga her zaman Open-Meteo'dan. `kaynaklar` alanı kaynağı gösterir. İkisi de kapsam dışıysa `kapsamDisi: true`. Kıyıya yakın nokta için `lat`/`lon` verilebilir. |
+| `GET` | `/sondurum/en-dusuk-sicakliklar?tarih=` | Türkiye geneli gerçekleşen en düşük sıcaklıklar. `tarih` yoksa en güncel gün. |
 | `GET` | `/sondurum/en-yuksek-sicakliklar?tarih=` | Aynısı, en yüksek sıcaklıklar için. |
 | `GET` | `/sondurum/toplam-yagis?tarih=` | Türkiye geneli gerçekleşen toplam yağış (mm). |
 | `GET` | `/sondurum/kar-kalinliklari` | Türkiye geneli anlık kar yüksekliği (cm). |
 | `GET` | `/sondurum/son-gozlemler` | İl merkezlerinde anlık ölçüm (sıcaklık, nem, yağış, rüzgar, basınç, hadise). |
-| `POST` | `/toplu` | Tek JSON isteği (`{"sorgular": ["istanbul", "bursa"]}`) ile çoklu konum sorgulaması yapar. Paralel çalışır. |
-| `POST/DELETE` | `/favoriler/<liste_id>` | Favori il/ilçe ekle/sil (`{"sorgu": "kadikoy/istanbul"}`). Hesap/kimlik doğrulama **yoktur** — `liste_id`'yi istemci kendi seçer/üretir. Onu bilen herkes listeyi düzenler. Liste başına en fazla `APP_FAVORI_MAX_KAYIT` kayıt. |
-| `GET` | `/favoriler/<liste_id>` | Listedeki tüm favoriler için hava durumunu `/toplu` ile aynı mantıkla (paralel, kısmi başarısızlığa toleranslı) tek istekte döner. |
-| `GET` | `/favoriler/<liste_id>/liste` | Hava durumu çekmeden yalnızca kayıtlı sorguları döner (hafif). |
-| `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet, Mapbox) için hazır, 81 ilin anlık sıcaklık verisiyle birleştirilmiş saf GeoJSON FeatureCollection döner. |
-| `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski: 5 günlük tahminin en düşük sıcaklığına dayalı sezgisel risk sınıflandırması. **MGM'nin resmi don uyarı ürünü değildir**
-| `GET` | `/metrics` | Prometheus formatında sistem metriklerini (cache hit/miss, HTTP süreleri, circuit breaker durumu) döner. |
+| `POST` | `/toplu` | Tek istekte çoklu konum sorgusu (`{"sorgular": ["istanbul", "bursa"]}`). Paralel çalışır. |
+| `POST/DELETE` | `/favoriler/<liste_id>` | Favori il/ilçe ekle/sil (`{"sorgu": "kadikoy/istanbul"}`). Hesap/kimlik doğrulama yoktur, `liste_id`'yi istemci seçer. Onu bilen herkes listeyi düzenler. Liste başına en fazla `APP_FAVORI_MAX_KAYIT` kayıt. |
+| `GET` | `/favoriler/<liste_id>` | Listedeki tüm favoriler için hava durumunu `/toplu` mantığıyla tek istekte döner. |
+| `GET` | `/favoriler/<liste_id>/liste` | Hava durumu çekmeden kayıtlı sorguları döner (hafif). |
+| `GET` | `/map/geojson` | Leaflet/Mapbox için hazır, 81 ilin anlık sıcaklığıyla birleşmiş GeoJSON. |
+| `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski, 5 günlük tahmine dayalı sezgisel sınıflandırma. MGM'nin resmi don uyarı ürünü değildir. |
+| `GET` | `/metrics` | Prometheus formatında sistem metrikleri (cache, HTTP süresi, circuit breaker). |
 
 Rate Limiting (İstek Sınırlandırması)
 -----------------------------------
-- Varsayılan Limit: IP başına 60 istek / 60 saniye (APP_RATE_LIMIT_MAX_REQUESTS / APP_RATE_LIMIT_WINDOW_SECONDS).
-- Harita Limiti: /map/geojson daha sıkı ve ayrı bir limite tabidir (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS).
-- Depolama & Fallback: REDIS_URL varsa sayaçlar Redis'te tutulur ve tüm instance'lar arasında paylaşılır. Redis yoksa in-memory belleğe düşer.
+- Varsayılan limit: IP başına 60 istek / 60 saniye (APP_RATE_LIMIT_MAX_REQUESTS / APP_RATE_LIMIT_WINDOW_SECONDS).
+- Harita limiti: /map/geojson daha sıkı, ayrı bir limite tabidir (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS).
+- Depolama: REDIS_URL varsa sayaçlar Redis'te tutulur, tüm instance'lar paylaşır. Yoksa bellekte tutulur.
 - Header'lar: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset.
-- Limit Aşımı: HTTP 429 Too Many Requests + Retry-After header
+- Limit aşımı: HTTP 429 + Retry-After header.
 
 Favoriler
 ---------
-- Kimlik Doğrulama: Yok. `liste_id`'yi istemci kendi seçer, onu bilen herkes o listeyi okur
+- Kimlik doğrulama yok. `liste_id`'yi istemci seçer, onu bilen herkes listeyi okur.
 - Limit: Liste başına en fazla 30 kayıt (APP_FAVORI_MAX_KAYIT).
-- Kalıcılık: REDIS_URL varsa favoriler Redis'te tutulur, kalıcıdır ve tüm worker/instance'lar arasında paylaşılır.
-- Toplu okuma: `GET /favoriler/<liste_id>`, listedeki tüm sorgular için `/toplu` ile aynı mantıkla hava durumunu döner.
+- Kalıcılık: REDIS_URL varsa Redis'te kalıcı tutulur, worker/instance'lar paylaşır.
+- Toplu okuma: `GET /favoriler/<liste_id>`, tüm sorgular için `/toplu` mantığıyla hava durumunu döner.
 
 ## Daha fazlası
 

@@ -29,7 +29,7 @@ Eşzamanlı yüksek trafik altında sistem performansını korumak için önbell
 
 MGM servisinin art arda hata döndürdüğü durumlarda sistemi korumak için Devre Kesici devreye girer.
 
-* **Durumlar:** Eşik değere ulaşıldığında devre **AÇIK** konuma geçer ve MGM'ye yeni istek atılmaz; doğrudan hata dönülür. Bekleme süresi dolduğunda devre **YARI AÇIK** duruma geçer ve tek bir test isteği atar. İstek başarılı olursa devre **KAPALI** (normal) duruma döner, başarısız olursa tekrar açılır.
+* **Durumlar:** Eşik değere ulaşıldığında devre **AÇIK** konuma geçer ve MGM'ye yeni istek atılmaz, doğrudan hata dönülür. Bekleme süresi dolduğunda devre **YARI AÇIK** duruma geçer ve tek bir test isteği atar. İstek başarılı olursa devre **KAPALI** (normal) duruma döner, başarısız olursa tekrar açılır.
 * **Önbellek Etkileşimi (Önemli):** Devre kesici **yalnızca ağ isteklerini engeller**, önbellek katmanının önüne geçmez. Devre açıkken önbellekte SWR kapsamında bayat veri varsa, bu veri istemciye sunulmaya devam eder. Arka plandaki gereksiz MGM istekleri kesilmiş olur. Önbellekte veri yoksa istek bekletilmeden reddedilir.
 * **İzleme:** Sistem durumu `GET /health` uç noktasındaki `circuit_breaker` alanından (`kapali` | `acik` | `yari-acik`) takip edilebilir.
 
@@ -40,7 +40,7 @@ MGM istasyon ölçümleri, gözlemsel olarak genellikle her saat başını birka
 * **Sıcak Pencere (`MGM_GUNCEL_SICAK_TTL_SANIYE` - Varsayılan: 120):** Saat başlarındaki veri değişimlerini hızlıca yakalamak için TTL kısa tutulur.
 * **Soğuk Pencere (`MGM_GUNCEL_SOGUK_TTL_SANIYE` - Varsayılan: 1800):** MGM'nin veri yayınlamadığı saat ortalarında gereksiz ağ isteklerini ve revalidation işlemlerini azaltmak için TTL 30 dakikaya uzatılır. 
 * **Zaman Bazlı Hesaplama:** TTL, verinin yazıldığı an değil, okunduğu anki saate göre (`Europe/Istanbul` saat diliminde) hesaplanır. Yeni bir saate geçildiğinde kayıt otomatik olarak bayat kabul edilir ve revalidation tetiklenir. Bu işlem için standart Python kütüphanesi `zoneinfo` ve `tzdata` bağımlılığı kullanılır.
-* **Kapatma:** `MGM_CACHE_TTL=0` veya `MGM_GUNCEL_DINAMIK_TTL=0` ayarlanarak dinamik TTL devre dışı bırakılabilir; bu durumda statik TTL geçerli olur.
+* **Kapatma:** `MGM_CACHE_TTL=0` veya `MGM_GUNCEL_DINAMIK_TTL=0` ayarlanarak dinamik TTL devre dışı bırakılabilir, bu durumda statik TTL geçerli olur.
 
 ## Yedek Veri Kaynağı (Open-Meteo Fallback)
 

@@ -50,7 +50,7 @@ Uç noktalar:
     GET /polen/<il>?ilce=<ilce>
         -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
            zeytin, ambrosia). Open-Meteo Air Quality API (CAMS Avrupa)
-           üzerinden; sezon dışı/kapsam dışı türler için "Veri Yok"
+           üzerinden. Sezon dışı/kapsam dışı türler için "Veri Yok"
            döner. Seviyeler (Düşük/Orta/Yüksek/Çok Yüksek) yaklaşık
            sınıflandırmadır, kesin klinik eşik değildir.
 
@@ -80,7 +80,7 @@ Uç noktalar:
     POST /favoriler/<liste_id>
         -> {"sorgu": "kadikoy/istanbul"} gövdesiyle bir favori ekler.
            <liste_id> istemcinin kendi seçtiği/ürettiği bir kimliktir
-           (hesap/kimlik doğrulama YOKTUR — liste_id'yi bilen herkes
+           (hesap/kimlik doğrulama YOKTUR. liste_id'yi bilen herkes
            listeyi okur/düzenler, tıpkı paylaşılmayan bir Pastebin
            linki gibi ele alınmalıdır). Liste başına en fazla
            APP_FAVORI_MAX_KAYIT (varsayılan 30) kayıt.
@@ -95,12 +95,12 @@ Uç noktalar:
 
     GET /favoriler/<liste_id>/liste
         -> Hava durumu çekmeden, yalnızca kayıtlı sorguları döner
-           (hafif; liste yönetimi arayüzleri için).
+           (hafif, liste yönetimi arayüzleri için).
 
     Kalıcılık: REDIS_URL tanımlıysa favoriler Redis'te tutulur (yeniden
     başlatmalarda kalıcı, worker/instance'lar arası paylaşılır,
     APP_FAVORI_TTL_SANIYE varsayılan 90 gün hareketsizlikte düşer).
-    Redis yoksa süreç-içi belleğe düşülür — yalnızca tek worker/geliştirme
+    Redis yoksa süreç-içi belleğe düşülür. Yalnızca tek worker/geliştirme
     ortamı için uygundur, süreç yeniden başladığında kaybolur.
 
 Rate limiting:
@@ -109,7 +109,7 @@ Rate limiting:
     cache'te 81 il için paralel istek attığından ayrı ve daha sıkı bir
     limite (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS, varsayılan 10) tabidir.
     Redis yapılandırılmışsa (REDIS_URL) sayaç Redis'te tutulur ve tüm
-    worker/instance'lar arasında paylaşılır; Redis yoksa/erişilemezse
+    worker/instance'lar arasında paylaşılır. Redis yoksa/erişilemezse
     süreç-içi belleğe düşülür (tek worker'da doğru, çoklu worker'da
     worker başına ayrı sayılır).
 
@@ -545,7 +545,7 @@ def docs():
 <html lang="tr">
 <head>
   <meta charset="utf-8" />
-  <title>Hava Durumu API — Dokümantasyon</title>
+  <title>Hava Durumu API Dokümantasyon</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.17.14/swagger-ui.min.css" />
   <style>body { margin: 0; }</style>
 </head>
@@ -621,12 +621,12 @@ def konum():
 @app.post("/toplu")
 def toplu():
     """
-    Tek istekte birden çok yer için hava durumu — her sorgu, /ara ile
+    Tek istekte birden çok yer için hava durumu. Her sorgu, /ara ile
     aynı akıllı çözümleyiciyi kullanır, yani "istanbul", "kadikoy/istanbul", 
     "maslak itü" gibi serbest metinler burada da geçerlidir.
 
     Kısmi başarısızlığa toleranslıdır: bir sorgu çözülemese bile diğerleri
-    etkilenmez — yanıt her zaman 200 döner (batch'in kendisi işlendi),
+    etkilenmez. Yanıt her zaman 200 döner (batch'in kendisi işlendi),
     her öğe kendi basarili/hata durumunu taşır. Sonuç dizisi, istek
     sırasıyla birebir aynı sırada döner
 
@@ -673,7 +673,7 @@ def toplu():
 
 @app.post("/favoriler/<liste_id>")
 def favori_ekle(liste_id: str):
-    """Bir favoriye sorgu ekler/günceller — bkz. modül docstring'i."""
+    """Bir favoriye sorgu ekler/günceller, bkz. modül docstring'i."""
     if not _favori_liste_id_gecerli(liste_id):
         return jsonify(
             {
@@ -699,7 +699,7 @@ def favori_ekle(liste_id: str):
 
 @app.delete("/favoriler/<liste_id>")
 def favori_sil(liste_id: str):
-    """Bir favoriden sorgu siler — bkz. modül docstring'i."""
+    """Bir favoriden sorgu siler, bkz. modül docstring'i."""
     if not _favori_liste_id_gecerli(liste_id):
         return jsonify(
             {
@@ -883,7 +883,7 @@ def hava_kalitesi(il: str):
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
             raise MGMWeatherError(
-                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı, "
                 "hava kalitesi koordinat gerektirir."
             )
         veri = mgm.hava_kalitesi(float(enlem), float(boylam))
@@ -899,7 +899,7 @@ def gun_ay_bilgisi(il: str):
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
             raise MGMWeatherError(
-                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı, "
                 "gün doğumu/batımı koordinat gerektirir."
             )
         veri: dict = {}
@@ -962,7 +962,7 @@ def sondurum_son_gozlemler():
 def polen(il: str):
     """
     Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu, zeytin,
-    ambrosia). Open-Meteo Air Quality API (CAMS Avrupa) üzerinden;
+    ambrosia). Open-Meteo Air Quality API (CAMS Avrupa) üzerinden.
     yalnızca ilgili türün sezonunda ve modelin kapsadığı konumlarda veri
     döner, aksi halde `seviye: "Veri Yok"` ile işaretlenir.
     """
@@ -971,7 +971,7 @@ def polen(il: str):
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
             raise MGMWeatherError(
-                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı, "
                 "polen indeksi koordinat gerektirir."
             )
         veri = mgm.polen_indeksi(float(enlem), float(boylam))
@@ -985,9 +985,9 @@ def deniz(il: str):
     """
     Anlık deniz suyu sıcaklığı + dalga durumu (yükseklik, periyot, yön).
     Sıcaklık öncelikle MGM Piri Reis istasyon verisinden, kapsam
-    dışı/başarısız olursa Open-Meteo Marine API'sinden; dalga verisi
+    dışı/başarısız olursa Open-Meteo Marine API'sinden. Dalga verisi
     her zaman Open-Meteo'dan gelir. Varsayılan olarak il/ilçenin
-    istasyon koordinatı kullanılır — kıyı ilçeleri için daha isabetlidir.
+    istasyon koordinatı kullanılır. Kıyı ilçeleri için daha isabetlidir.
     Kıyıya daha yakın özel bir koordinat vermek için ?lat=&lon= geçilebilir
     (karasal bir il merkezi yerine, örn. bir plaj/koy koordinatı).
     """
@@ -1011,7 +1011,7 @@ def deniz(il: str):
             _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
             if enlem is None or boylam is None:
                 raise MGMWeatherError(
-                    f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı; "
+                    f"'{il}' için konum (enlem/boylam) bilgisi bulunamadı, "
                     "deniz durumu koordinat gerektirir."
                 )
         veri = mgm.deniz_durumu(float(enlem), float(boylam))
@@ -1038,7 +1038,7 @@ def map_geojson():
 def don_uyarisi(il: str):
     """
     Tarımsal don/kırağı riski (5 günlük tahmin, sezgisel sınıflandırma).
-    MGM'nin resmi bir don uyarı ürünü DEĞİLDİR — bkz. mgm.don_kiragi_riski
+    MGM'nin resmi bir don uyarı ürünü DEĞİLDİR. Bkz. mgm.don_kiragi_riski
     docstring'i.
     """
     ilce = request.args.get("ilce")

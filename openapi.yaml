@@ -33,7 +33,7 @@ paths:
       tags: [iller]
       summary: Türkiye'nin 81 ilini listeler
       description: >
-        Sabit veridir; MGM'ye istek atmaz, önbellek/circuit breaker'dan
+        Sabit veridir. MGM'ye istek atmaz, önbellek/circuit breaker'dan
         etkilenmez. Plaka kodu sırasıyla döner.
       responses:
         "200":
@@ -99,20 +99,18 @@ paths:
   /uyarilar:
     get:
       tags: [uyarilar]
-      summary: Meteorolojik uyarılar (deneysel — MGM şeması doğrulanmadı)
+      summary: Meteorolojik uyarılar (deneysel, MGM şeması doğrulanmadı)
       description: >
-        MGM'nin meteorolojik uyarı (MeteoUYARI) verisini döndürür. **Önemli
-        sınır:** bu uç nokta diğerlerinden farklıdır — MGM'nin ham JSON
-        şemasını, bu API'nin geliştirildiği sırada Türkiye genelinde aktif
-        bir uyarı bulunmadığı için doğrulayamadık. Bu yüzden veri
-        dönüştürülmeden, MGM'den geldiği gibi `ham` alanı altında döner;
-        alan adlarını tahmin ederek Türkçeleştirme/yeniden şekillendirme
-        yapılmaz. MGM'nin resmi MeteoUYARI sistemi şiddet için
-        Yeşil/Sarı/Turuncu/Kırmızı, hadise tipi için Soğuk/Sıcak/Sis/Zirai
-        Don/Buzlanma ve Don/Toz Taşınımı/Kar Erimesi/Çığ/Kar/Gökgürültülü
-        Sağanak Yağış/Rüzgar/Yağmur kategorilerini kullanıyor (bkz.
-        mgm.gov.tr/meteouyari) — ama bu kategorilerin MGM'nin JSON
-        yanıtındaki gerçek alan adları doğrulanmadan varsayılmadı.
+        MGM'nin meteorolojik uyarı (MeteoUYARI) verisini döndürür.
+        **Önemli sınır:** bu uç nokta diğerlerinden farklıdır. MGM'nin ham
+        JSON şemasını, bu API'nin geliştirildiği sırada aktif bir uyarı
+        bulunmadığı için doğrulayamadık. Bu yüzden veri dönüştürülmeden,
+        MGM'den geldiği gibi `ham` alanı altında döner. Alan adları
+        tahmin edilip Türkçeleştirilmez. MGM'nin resmi MeteoUYARI sistemi
+        şiddet için Yeşil/Sarı/Turuncu/Kırmızı, hadise tipi için çeşitli
+        kategoriler kullanıyor (bkz. mgm.gov.tr/meteouyari), ama bunların
+        MGM'nin JSON yanıtındaki gerçek alan adları doğrulanmadan
+        varsayılmadı.
       parameters:
         - name: il
           in: query
@@ -120,7 +118,7 @@ paths:
           description: >
             MGM'ye doğrudan parametre olarak iletilir. Filtrenin MGM
             tarafında gerçekten desteklenip desteklenmediği doğrulanamadı
-            (aktif uyarı olmadığından test edilemedi) — zararsız bir
+            (aktif uyarı olmadığından test edilemedi). Zararsız bir
             passthrough'tur.
           schema:
             type: string
@@ -261,7 +259,7 @@ paths:
         schema: { type: string, pattern: "^[A-Za-z0-9_-]{3,64}$" }
         description: >
           İstemcinin kendi seçtiği/ürettiği bir kimlik (örn. cihazda
-          üretilip saklanan bir UUID). Hesap/kimlik doğrulama YOKTUR —
+          üretilip saklanan bir UUID). Hesap/kimlik doğrulama YOKTUR.
           liste_id'yi bilen herkes o listeyi okur/düzenler, paylaşılmayan
           bir Pastebin linki gibi ele alınmalıdır.
     post:
@@ -271,7 +269,7 @@ paths:
         Listeye bir sorgu ekler (aynı sorgu tekrar eklenirse zaman damgası
         güncellenir). Liste başına en fazla APP_FAVORI_MAX_KAYIT
         (varsayılan 30) kayıt. REDIS_URL tanımlıysa kalıcıdır
-        (APP_FAVORI_TTL_SANIYE, varsayılan 90 gün hareketsizlikte düşer);
+        (APP_FAVORI_TTL_SANIYE, varsayılan 90 gün hareketsizlikte düşer),
         tanımlı değilse yalnızca tek worker'ın belleğinde tutulur.
       requestBody:
         required: true
@@ -371,7 +369,7 @@ paths:
     get:
       tags: [favoriler]
       summary: Kayıtlı sorguları listele (hava durumu çekmeden)
-      description: Hafif uç nokta; yalnızca kayıtlı sorgu + eklenme tarihini döner, MGM'ye istek atmaz.
+      description: Hafif uç nokta, yalnızca kayıtlı sorgu ve eklenme tarihini döner, MGM'ye istek atmaz.
       responses:
         "200":
           description: Kayıtlı favoriler
@@ -441,7 +439,7 @@ paths:
       summary: Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2)
       description: >
         Öncelik İBB'nin resmi hava kalitesi ölçüm ağındadır (yalnızca
-        İstanbul'u kapsar); PM2.5 ve UV indeksi bu serviste bulunmadığından
+        İstanbul'u kapsar). PM2.5 ve UV indeksi bu serviste bulunmadığından
         her zaman Open-Meteo Air Quality API'siyle tamamlanır. İBB'ye hiç
         ulaşılamazsa (İstanbul dışı il, istasyon/servis hatası vb.) tüm
         alanlar Open-Meteo'dan gelir.
@@ -537,7 +535,7 @@ paths:
         Anlık polen konsantrasyonu (çimen, huş, kızılağaç, pelin otu,
         zeytin, ambrosia) ve her tür için basitleştirilmiş risk seviyesi
         (Yok/Düşük/Orta/Yüksek/Çok Yüksek) döner. Open-Meteo Air Quality
-        API'sinden (CAMS Avrupa modeli, key gerektirmez) beslenir; CAMS
+        API'sinden (CAMS Avrupa modeli, key gerektirmez) beslenir. CAMS
         polen verisi yalnızca Avrupa bölgesini ve ilgili türün sezonunu
         kapsadığından, kapsam dışı türler için değer null ve
         seviye "Veri Yok" döner. Risk seviyeleri EAN/CAMS tabanlı
@@ -679,7 +677,7 @@ paths:
       tags: [hava-durumu]
       summary: Saatlik hava tahmini (MGM'de mevcutsa)
       description: >
-        MGM'nin ham saatlik tahmin kaydını döner; alanlar istasyona göre
+        MGM'nin ham saatlik tahmin kaydını döner. Alanlar istasyona göre
         değişebileceğinden şema serbest formatlıdır.
       parameters:
         - $ref: "#/components/parameters/IlPath"
@@ -814,7 +812,7 @@ components:
 
     Istasyon:
       type: object
-      description: MGM'nin ham istasyon/merkez kaydı; alan adları istasyona göre değişebilir.
+      description: MGM'nin ham istasyon/merkez kaydı. Alan adları istasyona göre değişebilir.
       properties:
         istasyonId: { type: integer, example: 17062 }
         merkezId: { type: integer, example: 17062 }
@@ -896,7 +894,7 @@ components:
                 yanıtı. geocoding-mgm: Open-Meteo geocoding ile bulunan
                 il/ilçe MGM'de de doğrulandı. geocoding-dogrudan: MGM'de
                 karşılığı yok (ör. resmi ilçe olmayan bir mahalle),
-                `guncel` doğrudan Open-Meteo'dan; `tahmin` boş liste.
+                `guncel` doğrudan Open-Meteo'dan, `tahmin` boş liste.
               example: geocoding-dogrudan
 
     HavaKalitesi:
@@ -918,7 +916,7 @@ components:
         istasyon:
           type: object
           nullable: true
-          description: PM10/NO2 için kullanılan İBB istasyonu; İBB devrede değilse null
+          description: PM10/NO2 için kullanılan İBB istasyonu. İBB devrede değilse null
           properties:
             ad: { type: string, example: Kadıköy }
             adres: { type: string, nullable: true, example: "Kadıköy/İstanbul" }
@@ -935,7 +933,7 @@ components:
 
     HaritaGeoJSON:
       type: object
-      description: RFC 7946 FeatureCollection; Leaflet/Mapbox'a doğrudan verilebilir.
+      description: RFC 7946 FeatureCollection. Leaflet/Mapbox'a doğrudan verilebilir.
       properties:
         type: { type: string, enum: [FeatureCollection] }
         features:
@@ -954,7 +952,7 @@ components:
                   sicaklik:
                     type: number
                     nullable: true
-                    description: Son durum sıcaklığı (°C); bulunamazsa null
+                    description: Son durum sıcaklığı (°C), bulunamazsa null
                     example: 24.3
                   durum:
                     type: string
@@ -965,7 +963,7 @@ components:
     DonKiragiRiski:
       type: object
       description: >
-        MGM'nin resmi bir don uyarı ürünü değildir; 5 günlük sıcaklık
+        MGM'nin resmi bir don uyarı ürünü değildir. 5 günlük sıcaklık
         tahmininden türetilmiş sezgisel bir risk göstergesidir.
       properties:
         il: { type: string, example: "Erzurum" }
@@ -1009,7 +1007,7 @@ components:
       properties:
         turler:
           type: object
-          description: Anahtar polen türü (örn. grass_pollen); değer detay nesnesi.
+          description: Anahtar polen türü (örn. grass_pollen), değer detay nesnesi.
           additionalProperties:
             type: object
             properties:
@@ -1043,12 +1041,12 @@ components:
         denizSuyuSicakligi:
           type: number
           nullable: true
-          description: "°C; karasal/kapsam dışı konumda null"
+          description: "°C, karasal/kapsam dışı konumda null"
           example: 24.8
         dalgaYuksekligi:
           type: number
           nullable: true
-          description: "metre; karasal/kapsam dışı konumda null"
+          description: "metre, karasal/kapsam dışı konumda null"
           example: 0.8
         dalgaPeriyodu: { type: number, nullable: true, description: "saniye" }
         dalgaYonu: { type: number, nullable: true, description: "derece (0-360)" }
@@ -1146,7 +1144,7 @@ components:
         sorgu: { type: string, example: "merkez mahallesi" }
         secenekler:
           type: array
-          description: Farklı illerde birden fazla makul aday bulundu; tahmin yürütülmedi.
+          description: Farklı illerde birden fazla makul aday bulundu, tahmin yürütülmedi.
           items:
             type: object
             properties:

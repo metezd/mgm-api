@@ -3,7 +3,7 @@ mgm_client.py
 -------------
 Not: MGM'nin eski "web servis" (SOAP/REST) API'sinin yerini alan,
 www.mgm.gov.tr sitesinin kendisinin kullandığı iç JSON servislerine dayanır.
-Resmi belgelenmiş bir API değildir; MGM bu uç noktaların yapısını
+Resmi belgelenmiş bir API değildir. MGM bu uç noktaların yapısını
 değiştirirse istemcinin de güncellenmesi gerekir.
 
 Kullanım:
@@ -92,7 +92,7 @@ class _CircuitBreaker:
       isteğine izin verilir. Başarılı olursa devre kapanır ve sayaçlar
       sıfırlanır ve başarısız olursa devre tekrar `open_seconds` için açılır.
 
-    Thread-safe'tir; birden çok iş parçacığı aynı anda `basarisiz()` /
+    Thread-safe'tir. Birden çok iş parçacığı aynı anda `basarisiz()` /
     `izin_var_mi()` çağırabilir.
     """
 
@@ -122,7 +122,7 @@ class _CircuitBreaker:
             return True
 
     def basarili(self) -> None:
-        """Bir MGM isteği başarıyla tamamlandığında çağrılır; devreyi kapatır."""
+        """Bir MGM isteği başarıyla tamamlandığında çağrılır, devreyi kapatır."""
         with self._lock:
             self._hatalar.clear()
             self._acilma_zamani = None
@@ -321,7 +321,7 @@ TURKIYE_ILLERI: list[dict[str, Any]] = [
 def turkiye_illeri() -> list[dict[str, Any]]:
     """Türkiye'nin 81 ilini plaka kodu sırasıyla döndürür.
 
-    Sabit veridir; MGM'ye istek atmaz. Çağıranın listeyi kazara mutasyona
+    Sabit veridir. MGM'ye istek atmaz. Çağıranın listeyi kazara mutasyona
     uğratmaması için her çağrıda yeni bir kopya döner.
     """
     return copy.deepcopy(TURKIYE_ILLERI)
@@ -404,25 +404,23 @@ class MGMWeather:
     }
     NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
     NOMINATIM_USER_AGENT = "mgm-hava-durumu-api/1.0 (https://github.com/metezd/hava-durumu)"
-    # İBB Açık Veri Portalı — Çevre Koruma ve Kontrol Dairesi Başkanlığı
-    # hava kalitesi web servisleri (resmi, dokümante edilmiş; bkz.
-    # data.ibb.gov.tr "Hava Kalitesi İstasyon Bilgileri/Ölçüm Sonuçları
-    # Web Servisi"). Yalnızca İstanbul'u kapsar ve PM2.5 döndürmez —
-    # bu yüzden PM2.5 ve UV indeksi her zaman Open-Meteo'dan tamamlanır.
+    # İBB Açık Veri Portalı, Çevre Koruma ve Kontrol Dairesi hava kalitesi
+    # servisleri (resmi, dokümante). Yalnızca İstanbul'u kapsar, PM2.5
+    # döndürmez. PM2.5 ve UV indeksi bu yüzden Open-Meteo'dan tamamlanır.
     IBB_HAVA_KALITESI_ISTASYONLAR_URL = (
         "https://api.ibb.gov.tr/havakalitesi/OpenDataPortalHandler/GetAQIStations"
     )
     IBB_HAVA_KALITESI_OLCUM_URL = (
         "https://api.ibb.gov.tr/havakalitesi/OpenDataPortalHandler/GetAQIByStationId"
     )
-    # İl sınırları GeoJSON — statik/açık kaynak (OSM türevi), il bazında
+    # İl sınırları GeoJSON, statik/açık kaynak (OSM türevi), il bazında
     # MultiPolygon/Polygon sınırları. Neredeyse hiç değişmediği için
     # (idari sınır değişmediği sürece) uzun TTL ile önbelleklenir.
     GEOJSON_IL_SINIRLARI_URL = (
         "https://raw.githubusercontent.com/alpers/Turkey-Maps-GeoJSON/master/tr-cities.json"
     )
     # GeoJSON kaynağındaki bazı il adları MGM/81-il listesiyle birebir
-    # eşleşmez (kısaltma/varyant); difflib toleransı bunları yakalayamayabilir.
+    # eşleşmez (kısaltma/varyant), difflib toleransı bunları yakalayamayabilir.
     GEOJSON_IL_ALIASLARI = {
         "afyon": "Afyonkarahisar",
         "k. maras": "Kahramanmaraş",
@@ -496,8 +494,8 @@ class MGMWeather:
                     son_hata = exc
                     if deneme < REDIS_STARTUP_RETRY_ATTEMPTS:
                         logger.warning(
-                            "Redis'e başlangıç bağlantısı başarısız (deneme %d/%d): %s "
-                            "— %.1f sn sonra tekrar denenecek",
+                            "Redis'e başlangıç bağlantısı başarısız (deneme %d/%d): %s, "
+                            "%.1f sn sonra tekrar denenecek",
                             deneme,
                             REDIS_STARTUP_RETRY_ATTEMPTS,
                             exc,
@@ -567,7 +565,7 @@ class MGMWeather:
 
         Ilk istek lider olur ve loader'ı çalıştırıp eşzamanlı istekler aynı
         _InFlight kaydında bekleyip sonucu paylaşır. Hata durumunda hata da
-        paylaşılır; kayıtlar her sonuçta temizlenir.
+        paylaşılır. Kayıtlar her sonuçta temizlenir.
         """
         with self._in_flight_lock:
             kayit = self._in_flight.get(key)
@@ -601,7 +599,7 @@ class MGMWeather:
         return copy.deepcopy(kayit.sonuc)
 
     def _in_flight_sonucu_bekle(self, kayit: _InFlight) -> None:
-        """Lider isteğin tamamlanmasını bekler; hata girerse yeniden fırlatır."""
+        """Lider isteğin tamamlanmasını bekler, hata girerse yeniden fırlatır."""
         kayit.event.wait()
         if kayit.hata is not None:
             raise kayit.hata
@@ -680,7 +678,7 @@ class MGMWeather:
         url = f"{self.BASE_URL}/{path}"
 
         def loader() -> Any:
-            # Circuit breaker açıkken MGM'ye hiç istek atılmaz; hemen hata
+            # Circuit breaker açıkken MGM'ye hiç istek atılmaz, hemen hata
             # dönülür. Not: bu yalnızca asıl ağ isteğini engeller ve çağıran
             # `_cached_get` zaten stale veri varsa onu döndürmüş olabilir
             # (SWR akışı, arka planda bu loader'ı tetikler). Yani MGM
@@ -694,7 +692,7 @@ class MGMWeather:
                 )
                 raise MGMCircuitOpenError(
                     "MGM servisi art arda hata verdiği için circuit breaker "
-                    f"açık; istek atlandı ({url})."
+                    f"açık, istek atlandı ({url})."
                 )
 
             headers = self.HEADERS.copy()
@@ -841,27 +839,21 @@ class MGMWeather:
         """
         MGM'nin meteorolojik uyarı (MeteoUYARI) verisini döndürür.
 
-        ÖNEMLİ sbu metod diğerlerinden (guncel_durum, gunluk_tahmin vb.)
-        farklı çalışır: MGM'nin `alarmlar` uç noktasının ham JSON
-        şemasını, bu kodun yazıldığı sırada aktif bir uyarı bulunmadığı
-        için sDOĞRULAYAMADIK. Bu yüzden veriyi
-        dönüştürmeden, MGM'den geldiği gibi ham olarak döndürür — alan
-        adlarını tahmin ederek Türkçeleştirmeye/yeniden şekillendirmeye
-        ÇALIŞMAZ. Sebep: bu projede daha önce tam da bu tür bir tahmin
-        (ilce_istasyonu'nun eski client-side filtreleme mantığı) yanlış
-        çıkıp gerçek verileri "bulunamadı" göstermişti — aynı hatayı
-        görmediğimiz bir şema üzerinde tekrarlamamak için ham geçiş
-        tercih edildi.
+        Önemli: bu metod diğerlerinden farklı çalışır. Bu kodun yazıldığı
+        sırada aktif bir uyarı olmadığı için `alarmlar` uç noktasının ham
+        JSON şeması doğrulanamadı, bu yüzden veri dönüştürülmeden MGM'den
+        geldiği gibi döner. Alan adlarını tahmin ederek Türkçeleştirmeye
+        çalışmaz. Sebep: bu projede daha önce böyle bir tahmin
+        (ilce_istasyonu'nun eski filtreleme mantığı) yanlış çıkıp gerçek
+        veriyi "bulunamadı" göstermişti, aynı hata tekrarlanmasın diye
+        ham geçiş tercih edildi.
 
-        `il` verilirse MGM'ye doğrudan parametre olarak iletilir (MGM'nin
-        bunu destekleyip desteklemediği, filtrenin gerçekte çalışıp
-        çalışmadığı doğrulanamadı — zararsız bir passthrough'tur, MGM
-        parametreyi yok sayarsa en kötü ihtimalle filtresiz sonuçla aynı
-        şeyi alırsınız).
+        `il` verilirse MGM'ye doğrudan parametre olarak iletilir. Bunun
+        gerçekten filtrelediği doğrulanamadı, zararsız bir passthrough'tur.
 
         Gerçek bir uyarı aktifken bu metod tekrar çalıştırılıp MGM'nin
-        döndürdüğü gerçek alan adları görülmeli; ancak o zaman anlamlı
-        bir Türkçe şema/dönüşüm katmanı eklemek güvenli olur.
+        döndürdüğü gerçek alan adları görülmeli, ancak o zaman anlamlı
+        bir dönüşüm katmanı eklemek güvenli olur.
         """
         params: dict[str, Any] = {}
         if il:
@@ -871,7 +863,7 @@ class MGMWeather:
             "ham": data if data is not None else [],
             "not": (
                 "MGM'nin şu anki (bu kodun yazıldığı sıradaki) yanıtı boştu "
-                "çünkü aktif bir uyarı yoktu; alan adları bu yüzden ham "
+                "çünkü aktif bir uyarı yoktu, alan adları bu yüzden ham "
                 "olarak geçiliyor, doğrulanmış bir şema/dönüşüm henüz yok."
             ),
         }
@@ -881,14 +873,13 @@ class MGMWeather:
         Bir il adına göre MGM'nin döndürdüğü istasyon(lar)ı döndürür.
 
         Önemli sınır: MGM'nin `merkezler` uç noktası, yalnızca `il` verilip
-        `ilce` verilmediğinde o ilin TÜM ilçelerini değil, genelde tek bir
-        varsayılan istasyonu döner (İstanbul için bu davranış
-        `il=istanbul` sadece Bakırköy döner, oysa
-        `il=istanbul&ilce=kadikoy` ayrı ve doğru bir sonuç döner) Yani bu
-        yöntem "ilin tüm istasyonlarının listesi" değil, "ilin varsayılan
-        istasyonu" olarak okunmalı ve belirli bir ilçeye ulaşmak için
-        ilce_istasyonu(il, ilce) kullanın, o MGM'ye ilce'yi doğrudan
-        parametre olarak gönderir (bkz. docs/resilience.md)
+        `ilce` verilmediğinde o ilin tüm ilçelerini değil, genelde tek bir
+        varsayılan istasyonu döner (İstanbul için `il=istanbul` yalnız
+        Bakırköy döner, oysa `il=istanbul&ilce=kadikoy` ayrı ve doğru bir
+        sonuç döner). Yani bu yöntem "ilin tüm istasyonlarının listesi"
+        değil, "ilin varsayılan istasyonu" olarak okunmalı. Belirli bir
+        ilçeye ulaşmak için ilce_istasyonu(il, ilce) kullanın, o MGM'ye
+        ilçeyi doğrudan parametre olarak gönderir (bkz. docs/resilience.md).
         """
         data = self._get("merkezler", {"il": _tr_normalize(il)})
         if not data:
@@ -899,8 +890,8 @@ class MGMWeather:
         """MGM'ye hem `il` hem `ilce` parametresini birlikte gönderir.
 
         MGM'nin merkezler uç noktası bu iki parametre birlikte verildiğinde
-        o ilçeye ait istasyonu doğrudan döner — il_istasyonlari()'nin
-        döndürdüğü listede o ilçe olmasa bile bu sorgu genelde bulur. 
+        o ilçeye ait istasyonu doğrudan döner. il_istasyonlari()'nin
+        döndürdüğü listede o ilçe olmasa bile bu sorgu genelde bulur.
         `_get` zaten kendi cache/SWR/circuit-breaker
         mantığını çağıran ilce_istasyonu() bunu anlamlı bir hata mesajına çevirir.
         """
@@ -936,7 +927,7 @@ class MGMWeather:
                     f"'{il}' ilinde '{ilce}' ilçesi MGM'de bulunamadı (yazım "
                     f"hatası olabilir). MGM bir ilin tüm ilçelerini listelemeyi "
                     f"desteklemediğinden başka geçerli ilçe adlarını burada "
-                    f"göremiyoruz; '{il}' için varsayılan istasyon: "
+                    f"göremiyoruz. '{il}' için varsayılan istasyon: "
                     f"{varsayilan_ilce}."
                 )
             raise MGMWeatherError(f"'{il}' ilinde '{ilce}' ilçesi bulunamadı.")
@@ -957,11 +948,11 @@ class MGMWeather:
 
         İki katman var:
         1. Gece penceresi: en uzun TTL. Hem gerçek kullanıcı trafiği hem MGM'nin bazı istasyonlarının ölçüm
-           sıklığı muhtemelen düşer — bu da doğrulanmamış bir varsayım,
+           sıklığı muhtemelen düşer. Bu da doğrulanmamış bir varsayım,
            bu yüzden env ile kapatılabilir/ayarlanabilir tutuldu.
-        2. Saat başı sıcak/soğuk pencere: "sıcak
-           pencere" içinde kısa TTL kullanılır ki yeni düşen ölçüm hızlı 
-           yakalansın dışında TTL uzatılır
+        2. Saat başı sıcak/soğuk pencere: sıcak
+           pencere içinde kısa TTL kullanılır ki yeni düşen ölçüm hızlı
+           yakalansın, dışında TTL uzatılır
 
         `cache_ttl_seconds<=0` ya da `guncel_dinamik_ttl_aktif=False` ise
         devre dışı kalır, statik `cache_ttl_seconds` aynen döner.
@@ -972,7 +963,7 @@ class MGMWeather:
             simdi = _dt.datetime.now(ZoneInfo(self.guncel_zaman_dilimi))
         except (ZoneInfoNotFoundError, OSError) as exc:
             logger.warning(
-                "Dinamik TTL için saat dilimi çözümlenemedi (%s); statik TTL kullanılıyor.",
+                "Dinamik TTL için saat dilimi çözümlenemedi (%s), statik TTL kullanılıyor.",
                 exc,
             )
             return self.cache_ttl_seconds
@@ -1017,7 +1008,7 @@ class MGMWeather:
         kullanılan yedek kaynak. Open-Meteo key gerektirmeyen, ücretsiz bir
         hava durumu API'sidir (bkz. https://open-meteo.com). Alan adları
         MGM'ninkiyle birebir aynı tutulur ki tüketici tarafında ayrı bir
-        dallanma gerekmesin; `guncel_durum_yedekli` çağrısı yanıta hangi
+        dallanma gerekmesin. `guncel_durum_yedekli` çağrısı yanıta hangi
         kaynaktan geldiğini belirten bir `kaynak` alanı ekler.
 
         Kapsam bilinçli olarak dar tutuldu: yalnızca anlık durum için
@@ -1069,13 +1060,13 @@ class MGMWeather:
         boylam: float | None = None,
     ) -> dict[str, Any]:
         """
-        guncel_durum()'u dener; MGM hata verirse (circuit breaker açık dahil)
+        guncel_durum()'u dener. MGM hata verirse (circuit breaker açık dahil)
         ve enlem/boylam biliniyorsa Open-Meteo'ya düşer. Döndürülen sözlükte
-        her zaman bir `kaynak` alanı olur: "mgm" ya da "open-meteo" — hangi
+        her zaman bir `kaynak` alanı olur: "mgm" ya da "open-meteo", hangi
         servisten geldiği tüketici tarafında hep belli olsun diye.
 
         Not: il/ilçe → istasyon çözümlemesi (enlem/boylam'ın kendisi) de
-        MGM'den geliyor; MGM'nin istasyon listesi ("merkezler") ile anlık
+        MGM'den geliyor. MGM'nin istasyon listesi ("merkezler") ile anlık
         durum ("sondurumlar") uçları ayrı cache/SWR girdileri kullandığından
         genelde biri çökükken diğeri hâlâ cache'te taze olur, ama ikisi de
         aynı anda ve hiç cache'siz düşerse (soğuk anahtar + tam MGM kesintisi)
@@ -1164,7 +1155,7 @@ class MGMWeather:
     def _ibb_en_yakin_istasyon(
         self, enlem: float, boylam: float
     ) -> dict[str, Any] | None:
-        """Verilen koordinata en yakın İBB istasyonunu döner; en yakını
+        """Verilen koordinata en yakın İBB istasyonunu döner. En yakını
         `ibb_max_mesafe_km`'den uzaksa (İstanbul dışı) None döner."""
         istasyonlar = self._ibb_istasyonlari()
         en_yakin = min(
@@ -1254,7 +1245,7 @@ class MGMWeather:
     def _piri_reis_en_yakin_istasyon(
         self, enlem: float, boylam: float
     ) -> dict[str, Any] | None:
-        """Verilen koordinata en yakın Piri Reis deniz istasyonunu döner;
+        """Verilen koordinata en yakın Piri Reis deniz istasyonunu döner.
         en yakını `piri_reis_max_mesafe_km`'den uzaksa None döner."""
         istasyonlar = self._piri_reis_deniz_istasyonlari()
         en_yakin = min(
@@ -1429,7 +1420,7 @@ class MGMWeather:
         )
 
     def kar_kalinliklari(self) -> dict[str, Any]:
-        # anlık, tarih parametresi yok; deger alanı yerine karYukseklik
+        # anlık, tarih parametresi yok. deger alanı yerine karYukseklik (cm)
         veri = self._cached_get(
             self._cache_key("sondurum-kar"),
             lambda: self._get("sondurumlar/kar"),
@@ -1467,7 +1458,7 @@ class MGMWeather:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
 
         Öncelik İBB'nin resmi hava kalitesi ölçüm ağındadır (yalnızca
-        İstanbul'u, `ibb_max_mesafe_km` yarıçapında kapsar); PM2.5 ve UV
+        İstanbul'u, `ibb_max_mesafe_km` yarıçapında kapsar). PM2.5 ve UV
         indeksi İBB servisinde bulunmadığından her zaman Open-Meteo Air
         Quality API'siyle (key gerektirmez) tamamlanır. İBB'ye hiç
         ulaşılamazsa (İstanbul dışı konum, istasyon/servis hatası vb.)
@@ -1551,11 +1542,11 @@ class MGMWeather:
         modeli, key gerektirmez) beslenir.
 
         Kapsam notu: CAMS polen verisi yalnızca Avrupa bölgesini ve
-        yalnızca ilgili türün polen sezonunu kapsar; sezon dışında veya
+        yalnızca ilgili türün polen sezonunu kapsar. Sezon dışında veya
         modelin kapsamadığı konumlarda tür bazında değer null döner
         (`seviye: "Veri Yok"` olarak işaretlenir), bu bir hata değildir.
 
-        Not: Seviyeler kesin klinik/tıbbi eşikler değildir — genel
+        Not: Seviyeler kesin klinik/tıbbi eşikler değildir. Genel
         yönlendirme amaçlı, EAN/CAMS tabanlı yaklaşık sınıflandırmadır.
         """
         params = {
@@ -1670,7 +1661,7 @@ class MGMWeather:
         Open-Meteo'dan gelir. Döndürülen sözlükte `kaynaklar` alanı hangi verinin nereden geldiğini gösterir.
 
         Kapsam notu: Open-Meteo'nun deniz modeli yalnızca deniz
-        grid hücrelerini kapsar; Piri Reis istasyonu da bulunamazsa
+        grid hücrelerini kapsar. Piri Reis istasyonu da bulunamazsa
         (ikisi de kapsam dışıysa) tüm alanlar null döner ve
         `kapsamDisi: true` ile işaretlenir
         """
@@ -1712,7 +1703,7 @@ class MGMWeather:
         )
         sonuc["kapsamDisi"] = kapsam_disi
         sonuc["aciklama"] = (
-            "Kıyıya/açık denize yakın koordinat gerektirir; karasal "
+            "Kıyıya/açık denize yakın koordinat gerektirir, karasal "
             "konumlarda ve Piri Reis'in kapsamadığı kıyılarda tüm "
             "alanlar null döner."
             if kapsam_disi
@@ -1754,8 +1745,8 @@ class MGMWeather:
             )
         return sonuc
 
-    # Tarımsal don / kırağı riski — MGM'nin ayrı bir resmi don uç noktası
-    # yok; bu yüzden 5 günlük tahminin (enDusuk, nem, rüzgar) üzerinden
+    # Tarımsal don / kırağı riski. MGM'nin ayrı bir resmi don uç noktası
+    # yok, bu yüzden 5 günlük tahminin (enDusuk, nem, rüzgar) üzerinden
     # ziraat meteorolojisinde yaygın kullanılan eşiklerle sezgisel bir
     # risk sınıflandırması yapılır. RESMİ MGM DON UYARISI DEĞİLDİR.
     _DON_ESIKLERI = (
@@ -1784,10 +1775,10 @@ class MGMWeather:
         Orta / Kuvvetli / Çok Kuvvetli Don). Ayrıca düşük rüzgar
         (<10 km/h) + yüksek nem (>%60) birlikte görüldüğünde radyatif
         kırağı oluşumu için elverişli koşul olduğu ayrıca işaretlenir
-        (`kiragiKosuluUygun`) — bu, çıplak gökyüzü/durgun gece gibi
-        klasik kırağı oluşum koşullarının sıcaklık-dışı bir yaklaşımıdır.
+        (`kiragiKosuluUygun`). Bu, çıplak gökyüzü/durgun gece gibi
+        klasik kırağı oluşum koşullarının sıcaklık dışı bir yaklaşımıdır.
 
-        Not: Bu, MGM'nin resmi bir don uyarı ürünü DEĞİLDİR; 5 günlük
+        Not: Bu, MGM'nin resmi bir don uyarı ürünü DEĞİLDİR. 5 günlük
         sıcaklık tahmininden türetilmiş bir risk göstergesidir. Kritik
         tarımsal kararlar için MGM'nin resmi tarım meteorolojisi
         bültenleri esas alınmalıdır.
@@ -1844,7 +1835,7 @@ class MGMWeather:
             "gunler": sonuc_gunler,
             "aciklama": (
                 "5 günlük sıcaklık tahmininden türetilmiş sezgisel risk "
-                "göstergesidir; MGM'nin resmi don uyarı ürünü değildir."
+                "göstergesidir, MGM'nin resmi don uyarı ürünü değildir."
             ),
         }
 
@@ -1903,7 +1894,7 @@ class MGMWeather:
     def ay_evresi(self, tarih: _dt.date | None = None) -> dict[str, Any]:
         """
         Verilen tarih (UTC gün ortası referans alınarak) için ay evresini
-        yerel olarak hesaplar; dış servis/bağımlılık gerektirmez.
+        yerel olarak hesaplar, dış servis/bağımlılık gerektirmez.
 
         Döner: evreAdi, yasGunu (0-29.53), aydinlanmaOrani (0-1),
         buyuyorMu (bir sonraki dolunaya mı yaklaşıyor).
@@ -1955,7 +1946,7 @@ class MGMWeather:
 
     def _geojson_il_adini_coz(self, ham_ad: str) -> str | None:
         """GeoJSON kaynağındaki il adını 81-il listesindeki kanonik ada
-        çözer; önce bilinen alias sözlüğüne, sonra difflib yakın eşleşmeye
+        çözer. Önce bilinen alias sözlüğüne, sonra difflib yakın eşleşmeye
         bakar."""
         alias = self.GEOJSON_IL_ALIASLARI.get(_tr_normalize(ham_ad))
         if alias:
@@ -2025,7 +2016,7 @@ class MGMWeather:
         """
         Verilen kelimeyi 81 il listesindeki en yakın ile eşler (typo
         toleranslı). Önce tam normalize eşleşmeye bakar, olmazsa stdlib
-        difflib ile yakın eşleşme dener — 81 sabit string üzerinde
+        difflib ile yakın eşleşme dener. 81 sabit string üzerinde
         çalıştığı için ağır bir NLP/ML kütüphanesi gerekmez, difflib
         fazlasıyla yeterli. Eşleşme yeterince güçlü değilse None döner.
         """
@@ -2073,19 +2064,19 @@ class MGMWeather:
         "maslak itü" gibi) bir yere çözümlemeye çalışır. Katmanlı çalışır,
         her katman bir öncekinin çözemediği durumda devreye girer:
 
-        1. **Tam eşleşme** — sorgunun tamamı 81 ilden biriyle (typo
+        1. **Tam eşleşme.** Sorgunun tamamı 81 ilden biriyle (typo
            toleranslı) eşleşiyorsa, o ilin varsayılan istasyonu kullanılır.
            Ağ isteği yok.
-        2. **Parçalama** — sorgu '/', ',' ya da boşlukla ayrılmış
-           parçalara bölünür; parçalardan biri bilinen bir ile (typo
+        2. **Parçalama.** Sorgu '/', ',' ya da boşlukla ayrılmış
+           parçalara bölünür. Parçalardan biri bilinen bir ile (typo
            toleranslı) yakınsa, geri kalan parça(lar) ilçe adayı olarak
-           doğrudan MGM'ye sorulur (bkz. ilce_istasyonu — MGM'nin il+ilçe
+           doğrudan MGM'ye sorulur (bkz. ilce_istasyonu, MGM'nin il+ilçe
            birlikte verildiğinde doğru sonucu döndüğü ayrıca doğrulanmış
            bir davranıştır). Tek bir MGM isteği.
-        3. **Geocoding** — ilk iki katman sonuç vermezse, sorgu
+        3. **Geocoding.** İlk iki katman sonuç vermezse, sorgu
            Open-Meteo'nun (key gerektirmeyen) geocoding servisine
            gönderilir. Dönen en iyi aday tekrar MGM'de (il+ilçe olarak)
-           denenir; MGM'de de bulunamazsa (örn. "Maslak" resmi bir ilçe
+           denenir. MGM'de de bulunamazsa (örn. "Maslak" resmi bir ilçe
            değil, bir mahalle) doğrudan o koordinatla Open-Meteo'dan hava
            durumu döndürülür.
 
@@ -2093,7 +2084,7 @@ class MGMWeather:
         - `"cozuldu"`: `il`/`ilce` (ya da doğrudan `enlem`/`boylam`) ve
           `yontem` doludur.
         - `"belirsiz"`: geocoding, farklı illerde birden fazla makul aday
-          döndürdü — `secenekler` doludur, tahmin yürütülmedi.
+          döndürdü. `secenekler` doludur, tahmin yürütülmedi.
         - `"bulunamadi"`: hiçbir katman bir sonuç üretemedi.
         """
         sorgu = (sorgu or "").strip()
@@ -2105,7 +2096,7 @@ class MGMWeather:
         if il:
             return {"durum": "cozuldu", "yontem": "il-eslesme", "il": il, "ilce": None}
 
-        # Katman 2: parçalama — bir parça il, kalan(lar) ilçe adayı
+        # Katman 2: parçalama, bir parça il, kalan(lar) ilçe adayı
         parcalar = self._sorguyu_parcala(sorgu)
         if len(parcalar) >= 2:
             for i, parca in enumerate(parcalar):
@@ -2249,10 +2240,10 @@ class MGMWeather:
 
         - "cozuldu" ise hava_durumu()'nun döndürdüğü sözlüğe `durum`,
           `sorgu`, `yontem` alanları eklenerek döner (MGM istasyonuna
-          çözüldüyse tam hava_durumu() yanıtı; sadece koordinat çözüldüyse
-          — örn. "Maslak" gibi resmi ilçe olmayan bir yer — Open-Meteo'dan
+          çözüldüyse tam hava_durumu() yanıtı, sadece koordinat çözüldüyse
+          (örn. "Maslak" gibi resmi ilçe olmayan bir yer) Open-Meteo'dan
           yalnızca güncel durum, tahmin boş liste).
-        - "belirsiz" ise hava durumu getirmeden seçenek listesini döner;
+        - "belirsiz" ise hava durumu getirmeden seçenek listesini döner.
           çağıran kullanıcıya seçim yaptırmalı.
         - Hiçbir şey çözülemezse MGMWeatherError fırlatır.
         """
@@ -2288,7 +2279,7 @@ class MGMWeather:
         Koordinatı bir adres bileşenine çözer: OpenStreetMap'in
         ücretsiz Nominatim servisi. Kullanım politikası
         saniyede 1 istekle sınırlı ve tanımlayıcı bir User-Agent zorunlu
-        kılıyor. Bu proje ölçeğinde sorun değil; yüksek trafikli bir deploy'da kendi Nominatim
+        kılıyor. Bu proje ölçeğinde sorun değil, yüksek trafikli bir deploy'da kendi Nominatim
         instance'ınızı barındırmanız ya da ücretli bir alternatif kullanmanız gerekir.
 
         Adres bulunamazsa None döner

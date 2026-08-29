@@ -393,7 +393,7 @@ class TestCircuitBreaker(unittest.TestCase):
     def test_devre_acikken_stale_cache_verisi_donmeye_devam_eder(self):
         """Redis/in-memory cache tampon görevi görür: breaker açık olsa da
         stale-while-revalidate penceresindeki eski veri kullanıcıya
-        dönmeye devam eder; sadece arka plandaki asıl ağ isteği atlanır."""
+        dönmeye devam eder, sadece arka plandaki asıl ağ isteği atlanır."""
         eski_yuk = [{"deger": 1}]
         session = _PatlayanSession()
         client = MGMWeather(
@@ -424,7 +424,7 @@ class TestCircuitBreaker(unittest.TestCase):
 
 
 class _UrlBazliSession:
-    """URL'nin içerdiği alt path'e göre farklı davranan sahte session —
+    """URL'nin içerdiği alt path'e göre farklı davranan sahte session.
     MGM/Open-Meteo fallback senaryolarını (aynı istek zincirinde bazı
     uçların başarılı, bazılarının başarısız olması) test etmek için."""
 
@@ -553,7 +553,7 @@ class TestRedisBaslangicYenidenDeneme(unittest.TestCase):
     """Render/Docker Compose gibi ortamlarda web servis ile Redis'in
     yaklaşık eşzamanlı başlatılması, ilk ping'in geçici olarak (DNS henüz
     hazır değilken) başarısız olmasına yol açabiliyor. Bu, gerçek bir
-    yanlış yapılandırmadan ayırt edilmeli — birkaç deneme sonra toparlanmalı,
+    yanlış yapılandırmadan ayırt edilmeli. Birkaç deneme sonra toparlanmalı,
     ama denemeler gerçekten tükenirse hâlâ sert şekilde hata vermeli."""
 
     def test_gecici_baglanti_hatasi_birkac_denemeden_sonra_toparlanir(self):
@@ -597,7 +597,7 @@ class TestRedisBaslangicYenidenDeneme(unittest.TestCase):
 
 class _IlceFarkindaSession:
     """merkezler isteklerinde `il`/`ilce` parametrelerine göre farklı sahte
-    yanıt döner — MGM'nin gerçek (canlıda doğrulanmış) davranışını taklit
+    yanıt döner. MGM'nin gerçek (canlıda doğrulanmış) davranışını taklit
     eder: il-only sorgu o ilin sadece varsayılan istasyonunu döner, il+ilce
     sorgusu o ilçeye özel (farklı) bir istasyon döner."""
 
@@ -627,7 +627,7 @@ class _IlceFarkindaSession:
 
 class TestIlceDogrudanSorgu(unittest.TestCase):
     """MGM'nin merkezler uç noktası il-only sorguda o ilin sadece bir
-    (varsayılan) istasyonunu döner, tüm ilçelerini değil — bu canlıda
+    (varsayılan) istasyonunu döner, tüm ilçelerini değil. Bu canlıda
     doğrulandı (İstanbul: il=istanbul -> yalnızca Bakırköy, ama
     il=istanbul&ilce=kadikoy -> ayrı ve doğru bir sonuç döner). Doğru
     davranış: ilce verildiğinde MGM'ye doğrudan parametre olarak
@@ -661,7 +661,7 @@ class TestIlceDogrudanSorgu(unittest.TestCase):
             client.ilce_istasyonu("istanbul", "olmayanilce")
         mesaj = str(ctx.exception)
         # Artık "Kullanılabilir ilçe(ler): X" gibi yanlışlıkla tam liste
-        # iddia eden bir ifade yok; sadece varsayılan istasyonu öneriyor.
+        # iddia eden bir ifade yok, sadece varsayılan istasyonu öneriyor.
         self.assertNotIn("Kullanılabilir ilçe(ler)", mesaj)
         self.assertIn("Bakırköy", mesaj)
 
@@ -790,9 +790,9 @@ class TestAkilliAramaCozumleyici(unittest.TestCase):
 
     def test_katman3_birlesik_sorgu_bos_donerse_tek_kelime_denenir(self):
         """Regresyon: canlıda 'maslak itü' Open-Meteo'da birleşik metin
-        olarak hiç sonuç vermiyordu (GeoNames'te böyle bir kayıt yok —
+        olarak hiç sonuç vermiyordu (GeoNames'te böyle bir kayıt yok,
         İTÜ bir kurum, yer adı değil). Tam sorgu boş dönerse kelimeler
-        tek tek denenmeli; 'maslak' tek başına bulunmalı."""
+        tek tek denenmeli, 'maslak' tek başına bulunmalı."""
         session = _AkilliAramaSession(
             merkezler_davranisi={},
             geocode_sorgu_bazli={
@@ -971,7 +971,7 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
     def test_gece_penceresinde_en_uzun_ttl_doner(self):
         client = MGMWeather(cache_ttl_seconds=60)
         with patch("mgm_client._dt.datetime") as mock_dt:
-            # Saat 03:08 — hem "sıcak pencere" dakikasında (8) hem gece
+            # Saat 03:08, hem "sıcak pencere" dakikasında (8) hem gece
             # penceresinde (0-6). Gece önceliklidir.
             mock_dt.now.return_value = self._sahte_simdi(dakika=8, saat=3)
             self.assertEqual(client._guncel_durum_dinamik_ttl(), client.guncel_gece_ttl_saniye)
@@ -1034,7 +1034,7 @@ class TestTahminAyriTTL(unittest.TestCase):
 
     def test_cache_kapaliyken_tahmin_ttli_de_kapanir(self):
         # Kritik regresyon: cache_ttl_seconds=0 birçok testte "cache'i
-        # kapat" niyetiyle kullanılıyor; tahmin_ttl_saniye'nin kendi
+        # kapat" niyetiyle kullanılıyor, tahmin_ttl_saniye'nin kendi
         # varsayılanı (10800) bu niyeti ezmemeli.
         client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
         self.assertEqual(client._tahmin_ttl(), 0)
@@ -1088,7 +1088,7 @@ class TestUyarilar(unittest.TestCase):
         self.assertEqual(params.get("il"), "istanbul")
 
     def test_dolu_veri_donerse_donusturmeden_oldugu_gibi_gecer(self):
-        # MGM'nin gerçek alan adlarını bilmiyoruz; kasıtlı olarak
+        # MGM'nin gerçek alan adlarını bilmiyoruz, kasıtlı olarak
         # "bilmediğimiz" alan adlarıyla bir örnek veriyoruz
         mgm_ham_ornek = [
             {"bilinmeyenAlan1": "sarı", "bilinmeyenAlan2": "fırtına", "il": "Rize"}
@@ -1163,7 +1163,7 @@ class TestKonumCozumleyici(unittest.TestCase):
 
     def test_ilce_alani_farkli_isimde_gelse_de_denenir(self):
         # Nominatim bazı bölgelerde 'county' yerine 'town'/'suburb' gibi
-        # farklı alan adları kullanabiliyor — hepsi sırayla denenmeli.
+        # farklı alan adları kullanabiliyor, hepsi sırayla denenmeli.
         session = _KonumSession(
             nominatim_adres={"state": "İstanbul", "town": "Beşiktaş"},
             merkezler_davranisi={
@@ -1222,7 +1222,7 @@ class TestKonumCozumleyici(unittest.TestCase):
         # koordinat), 81 il listesiyle eşleşmez. Nominatim yine de bir
         # adres bulduğu için yontem "nominatim-open-meteo" olur (Nominatim
         # hiç adres bulamadığı "open-meteo-dogrudan" durumundan bilinçli
-        # olarak ayrı tutuluyor — hangisinin olduğu debug için faydalı).
+        # olarak ayrı tutuluyor, hangisinin olduğu debug için faydalı).
         session = _KonumSession(nominatim_adres={"state": "Attiki", "county": "Athens"})
         client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
         client.session = session
