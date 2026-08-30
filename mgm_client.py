@@ -32,14 +32,24 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
-from prometheus_client import Counter
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+try:
+    from prometheus_client import Counter
+except ImportError:  # pragma: no cover
+    class Counter:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs):
+            pass
+
 logger = logging.getLogger("mgm_client")
 
-# Cache altyapısı ana istek akışını asla uzun süre bloklamamalı
-# bu nedenle değerler bilinçli olarak düşük tutulur.
 REDIS_CONNECT_TIMEOUT = 2.0
 REDIS_SOCKET_TIMEOUT = 2.0
 REDIS_HEALTH_CHECK_INTERVAL = 30
@@ -50,16 +60,10 @@ REDIS_STARTUP_RETRY_DELAY_SECONDS = 2.0
 _CACHED_AT_KEY = "_cachedAt"
 _VALUE_KEY = "_value"
 
-# Circuit breaker varsayılanları: MGM art arda hata verirse
-# devre açılır ve bu süre boyunca MGM'ye hiç istek atılmadan 
-# doğrudan hata dönülür. Cache katmanı ayrı çalışır
 CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
 CIRCUIT_BREAKER_WINDOW_SECONDS = 30.0
 CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
 
-# Prometheus metrikleri modül seviyesinde tanımlı, global default
-# registry'de yaşıyor. app.py'deki /metrics endpoint'i generate_latest
-# çağırdığında bunlar otomatik dahil olur
 CACHE_SONUC_SAYAC = Counter(
     "mgm_cache_result_total",
     "Cache sorgu sonucu (hit: taze, stale_hit: bayat ama sunuldu, miss: hiç yok)",

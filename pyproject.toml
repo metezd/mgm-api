@@ -1,3 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mgm-client"
+version = "1.0.0"
+description = "MGM (Türkiye) hava durumu verisine bağımsız erişim, HTTP sunucu gerektirmez"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "requests>=2.31",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0"]
+sunucu = [
+    "flask>=3.0",
+    "flask-compress>=1.15",
+    "prometheus-client>=0.20",
+    "pyyaml>=6.0",
+    "redis>=5.0",
+    "waitress>=3.0",
+]
+
+[tool.setuptools]
+py-modules = ["mgm_client"]
+
 [tool.ruff]
 line-length = 115
 target-version = "py313"

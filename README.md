@@ -22,6 +22,34 @@ docker compose up --build
 
 Docker olmadan çalıştırmak, geliştirme ortamı kurmak veya buluta (Render vb.) deploy etmek için detaylı yönergeleri [docs/development.md](docs/development.md) dosyasında bulabilirsiniz.
 
+## Gömülü Kullanım
+
+`mgm_client.py` bağımsız bir Python modülüdür, Flask'a veya bir HTTP sunucusuna ihtiyaç duymaz. Kendi scriptine/uygulamana gömüp doğrudan çağırabilirsin:
+
+```bash
+pip install .          # sadece requests + tzdata kurulur
+```
+
+```python
+from mgm_client import MGMWeather
+
+mgm = MGMWeather()  # sıfır yapılandırma, env değişkeni gerekmez
+print(mgm.hava_durumu("İstanbul", "Kadıköy"))
+```
+
+Redis ve tam sunucu bağımlılıkları (Flask, prometheus-client vb.) isteğe bağlıdır:
+
+```bash
+pip install .[redis]     # cache ve rate limit için Redis desteği
+pip install .[sunucu]    # app.py'yi çalıştırmak için tam sunucu bağımlılıkları
+```
+
+Hızlı komut satırı testi:
+
+```bash
+python mgm_client.py İstanbul Kadıköy
+```
+
 ## Kullanım
 
 ```bash
