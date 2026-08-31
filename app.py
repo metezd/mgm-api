@@ -103,6 +103,35 @@ Uç noktalar:
     Redis yoksa süreç-içi belleğe düşülür. Yalnızca tek worker/geliştirme
     ortamı için uygundur, süreç yeniden başladığında kaybolur.
 
+    POST /alerts/<liste_id>
+        -> {"tur": "weather.temp_threshold", "il": "İstanbul",
+           "webhookUrl": "https://...", "esik": 38, "yon": "ustunde"}
+           gövdesiyle bir alert kaydı ekler. <liste_id> favoriler ile
+           aynı mantıkla istemcinin kendi seçtiği bir kimliktir, hesap
+           sistemi yok. Desteklenen "tur" değerleri:
+           weather.temp_threshold, weather.wind_gust_exceeded,
+           weather.rain_threshold (eşik bazlı, koşul doğru olduğu her
+           kontrolde tetiklenir), weather.rain_started,
+           weather.rain_stopped, weather.warning_issued (olay bazlı,
+           yalnızca durum değişiminde bir kez tetiklenir),
+           weather.frost_risk (eşik bir don seviyesi adıdır, varsayılan
+           "Hafif Don"). Liste başına en fazla APP_ALERT_MAX_KAYIT
+           kayıt.
+
+    DELETE /alerts/<liste_id>/<alert_id>
+        -> Bir alert kaydını siler.
+
+    GET /alerts/<liste_id>
+        -> Listedeki tüm alert kayıtlarını döner.
+
+    POST /api/v1/alerts/check
+        -> Authorization: Bearer <CRON_SECRET> header'ıyla korunur.
+           Kayıtlı tüm alertleri değerlendirir, tetiklenenler için
+           webhookUrl'e POST atar. Sunucu içinde zamanlayıcı YOKTUR,
+           bu uç nokta dışarıdan periyodik çağrılmalıdır. Test
+           amaçlı ENABLE_INTERNAL_SCHEDULER=true ile isteğe bağlı bir
+           APScheduler tabanlı iç zamanlayıcı da açılabilir.
+
 Rate limiting:
     IP başına APP_RATE_LIMIT_MAX_REQUESTS (varsayılan 60) istek /
     APP_RATE_LIMIT_WINDOW_SECONDS (varsayılan 60sn). /map/geojson soğuk
@@ -127,9 +156,11 @@ import random
 import re
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
+import requests
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -405,6 +436,309 @@ def _favori_listele(liste_id: str) -> list[dict]:
     with _FAVORI_BELLEK_KILIT:
         liste = _FAVORI_BELLEK.get(liste_id, {})
         return sorted(liste.values(), key=lambda k: k.get("eklenmeTarihi") or "")
+
+
+# Her alert kaydı bir server-side alert_id alır ve tüm liste_id'ler
+# arasında tek bir global kayıt (alerts:all) tutulur ki /alerts/check
+# tüm alertleri tek taramada gezebilsin.
+ALERT_TURLERI = {
+    "weather.temp_threshold",
+    "weather.wind_gust_exceeded",
+    "weather.rain_threshold",
+    "weather.rain_started",
+    "weather.rain_stopped",
+    "weather.frost_risk",
+    "weather.warning_issued",
+}
+ALERT_OLAY_BAZLI_TURLER = {
+    "weather.rain_started",
+    "weather.rain_stopped",
+    "weather.warning_issued",
+}
+ALERT_MAX_KAYIT = int(os.getenv("APP_ALERT_MAX_KAYIT", "30"))
+ALERT_TTL_SANIYE = int(os.getenv("APP_ALERT_TTL_SANIYE", str(90 * 24 * 3600)))
+ALERT_WEBHOOK_TIMEOUT = float(os.getenv("APP_ALERT_WEBHOOK_TIMEOUT_SANIYE", "5"))
+ALERT_YAGISLI_HADISE_KODLARI = {
+    "HY", "Y", "KY", "KKY", "HKY", "K", "KYK",
+    "HSY", "SY", "KSY", "MSY", "DY", "GSY", "KGSY",
+}
+ALERT_DON_SEVIYE_SIRASI = {
+    "Risk Yok": 0, "Bilinmiyor": 0, "Kırağı Riski": 1,
+    "Hafif Don": 2, "Orta Don": 3, "Kuvvetli Don": 4, "Çok Kuvvetli Don": 5,
+}
+
+_ALERT_BELLEK: dict[str, dict] = {}
+_ALERT_LISTE_INDEX: dict[str, set[str]] = defaultdict(set)
+_ALERT_BELLEK_KILIT = threading.Lock()
+
+
+class AlertHatasi(Exception):
+    """Alert özelliğine özgü kullanıcı hataları (geçersiz tur, limit aşımı vb.)."""
+
+
+def _alert_redis_all_key(prefix: str) -> str:
+    return f"{prefix}alerts:all"
+
+
+def _alert_redis_liste_key(liste_id: str, prefix: str) -> str:
+    return f"{prefix}alerts:liste:{liste_id}"
+
+
+def _iso_now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _alert_ekle(liste_id: str, govde: dict) -> dict:
+    tur = govde.get("tur")
+    il = govde.get("il")
+    webhook_url = govde.get("webhookUrl")
+    if tur not in ALERT_TURLERI:
+        raise AlertHatasi(f"Geçersiz 'tur'. Seçenekler: {', '.join(sorted(ALERT_TURLERI))}")
+    if not il or not isinstance(il, str):
+        raise AlertHatasi("'il' zorunludur.")
+    if not webhook_url or not isinstance(webhook_url, str) or not webhook_url.startswith(("http://", "https://")):
+        raise AlertHatasi("'webhookUrl' geçerli bir http(s) URL olmalıdır.")
+
+    kayit = {
+        "id": uuid.uuid4().hex[:12],
+        "listeId": liste_id,
+        "tur": tur,
+        "il": il,
+        "ilce": govde.get("ilce"),
+        "webhookUrl": webhook_url,
+        "esik": govde.get("esik"),
+        "yon": govde.get("yon", "ustunde"),
+        "sonDurum": None,
+        "sonTetiklenme": None,
+        "olusturmaTarihi": _iso_now(),
+    }
+
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            liste_key = _alert_redis_liste_key(liste_id, redis_prefix)
+            if redis_client.scard(liste_key) >= ALERT_MAX_KAYIT:
+                raise AlertHatasi(f"Bu listede en fazla {ALERT_MAX_KAYIT} alert olabilir.")
+            all_key = _alert_redis_all_key(redis_prefix)
+            redis_client.hset(all_key, kayit["id"], json.dumps(kayit, ensure_ascii=False))
+            redis_client.sadd(liste_key, kayit["id"])
+            redis_client.expire(liste_key, ALERT_TTL_SANIYE)
+            return kayit
+        except redis_hata_sinifi:
+            logger.warning("Alert eklenemedi, bellek içi depolamaya düşülüyor.")
+
+    with _ALERT_BELLEK_KILIT:
+        if len(_ALERT_LISTE_INDEX[liste_id]) >= ALERT_MAX_KAYIT:
+            raise AlertHatasi(f"Bu listede en fazla {ALERT_MAX_KAYIT} alert olabilir.")
+        _ALERT_BELLEK[kayit["id"]] = kayit
+        _ALERT_LISTE_INDEX[liste_id].add(kayit["id"])
+    return kayit
+
+
+def _alert_sil(liste_id: str, alert_id: str) -> bool:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            liste_key = _alert_redis_liste_key(liste_id, redis_prefix)
+            all_key = _alert_redis_all_key(redis_prefix)
+            silindi = redis_client.srem(liste_key, alert_id)
+            if silindi:
+                redis_client.hdel(all_key, alert_id)
+            return bool(silindi)
+        except redis_hata_sinifi:
+            logger.warning("Alert silinemedi, bellek içi depolamaya düşülüyor.")
+
+    with _ALERT_BELLEK_KILIT:
+        if alert_id in _ALERT_LISTE_INDEX.get(liste_id, set()):
+            _ALERT_LISTE_INDEX[liste_id].discard(alert_id)
+            _ALERT_BELLEK.pop(alert_id, None)
+            return True
+    return False
+
+
+def _alert_listele(liste_id: str) -> list[dict]:
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            liste_key = _alert_redis_liste_key(liste_id, redis_prefix)
+            all_key = _alert_redis_all_key(redis_prefix)
+            id_ler = {i.decode() if isinstance(i, bytes) else i for i in redis_client.smembers(liste_key)}
+            if not id_ler:
+                return []
+            ham = redis_client.hmget(all_key, list(id_ler))
+            sonuc = [json.loads(d) for d in ham if d]
+            return sorted(sonuc, key=lambda k: k.get("olusturmaTarihi") or "")
+        except (redis_hata_sinifi, json.JSONDecodeError, TypeError):
+            logger.warning("Alertler listelenemedi, bellek içi depolama okunuyor.")
+
+    with _ALERT_BELLEK_KILIT:
+        id_ler = _ALERT_LISTE_INDEX.get(liste_id, set())
+        return sorted(
+            (_ALERT_BELLEK[i] for i in id_ler if i in _ALERT_BELLEK),
+            key=lambda k: k.get("olusturmaTarihi") or "",
+        )
+
+
+def _alert_tumunu_al() -> list[dict]:
+    """/alerts/check taraması için tüm liste_id'lerdeki tüm alertleri döner."""
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            all_key = _alert_redis_all_key(redis_prefix)
+            ham = redis_client.hgetall(all_key)
+            return [json.loads(d) for d in ham.values()]
+        except (redis_hata_sinifi, json.JSONDecodeError, TypeError):
+            logger.warning("Alertler alınamadı, bellek içi depolama okunuyor.")
+
+    with _ALERT_BELLEK_KILIT:
+        return list(_ALERT_BELLEK.values())
+
+
+def _alert_kayit_guncelle(kayit: dict) -> None:
+    """Değerlendirme sonrası sonDurum/sonTetiklenme kalıcı hale getirilir."""
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            all_key = _alert_redis_all_key(redis_prefix)
+            redis_client.hset(all_key, kayit["id"], json.dumps(kayit, ensure_ascii=False))
+            return
+        except redis_hata_sinifi:
+            logger.warning("Alert güncellenemedi, bellek içi depolamaya düşülüyor.")
+
+    with _ALERT_BELLEK_KILIT:
+        if kayit["id"] in _ALERT_BELLEK:
+            _ALERT_BELLEK[kayit["id"]] = kayit
+
+
+def _alert_degerlendir(alert: dict) -> tuple[bool, dict]:
+    """(tetiklendi_mi, yeni_olcum) döner. yeni_olcum her zaman geri
+    verilir, olay bazlı türlerin bir sonraki karşılaştırması için
+    çağıran taraf bunu alert["sonDurum"]'a yazıp kalıcı hale getirmeli.
+    """
+    tur = alert["tur"]
+    il = alert["il"]
+    ilce = alert.get("ilce")
+    onceki = alert.get("sonDurum") or {}
+
+    if tur == "weather.warning_issued":
+        uyari = mgm.uyarilar(il=il)
+        ham = uyari.get("ham") if isinstance(uyari, dict) else None
+        var_mi = bool(ham)
+        olcum = {"aktifUyariVar": var_mi}
+        onceki_var_mi = onceki.get("aktifUyariVar")
+        tetiklendi = onceki_var_mi is not None and not onceki_var_mi and var_mi
+        return tetiklendi, olcum
+
+    if tur == "weather.frost_risk":
+        istasyon_id = _istasyon_id_getir(il, ilce)
+        risk = mgm.don_kiragi_riski(istasyon_id, il=il, ilce=ilce)
+        seviye = risk.get("genelRiskSeviyesi")
+        olcum = {"genelRiskSeviyesi": seviye}
+        esik_seviye = alert.get("esik") or "Hafif Don"
+        tetiklendi = ALERT_DON_SEVIYE_SIRASI.get(seviye, 0) >= ALERT_DON_SEVIYE_SIRASI.get(esik_seviye, 2)
+        return tetiklendi, olcum
+
+    _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
+    istasyon_id = _istasyon_id_getir(il, ilce)
+    guncel = mgm.guncel_durum_yedekli(istasyon_id, enlem, boylam)
+
+    if tur == "weather.temp_threshold":
+        sicaklik = guncel.get("sicaklik")
+        olcum = {"sicaklik": sicaklik}
+        if sicaklik is None:
+            return False, olcum
+        esik = alert.get("esik")
+        tetiklendi = sicaklik > esik if alert.get("yon") != "altinda" else sicaklik < esik
+        return tetiklendi, olcum
+
+    if tur == "weather.wind_gust_exceeded":
+        ruzgar = guncel.get("ruzgarHizi")
+        olcum = {"ruzgarHizi": ruzgar}
+        if ruzgar is None:
+            return False, olcum
+        return ruzgar > (alert.get("esik") or 0), olcum
+
+    if tur == "weather.rain_threshold":
+        yagis = guncel.get("yagis")
+        olcum = {"yagis": yagis}
+        if yagis is None:
+            return False, olcum
+        return yagis > (alert.get("esik") or 0), olcum
+
+    if tur in ("weather.rain_started", "weather.rain_stopped"):
+        simdi_yagisli = guncel.get("durumKodu") in ALERT_YAGISLI_HADISE_KODLARI
+        olcum = {"durumKodu": guncel.get("durumKodu"), "yagisli": simdi_yagisli}
+        once_yagisli = onceki.get("yagisli")
+        tetiklendi = False
+        if once_yagisli is not None:
+            if tur == "weather.rain_started":
+                tetiklendi = not once_yagisli and simdi_yagisli
+            else:
+                tetiklendi = once_yagisli and not simdi_yagisli
+        return tetiklendi, olcum
+
+    return False, {}
+
+
+def _alert_webhook_gonder(alert: dict, olcum: dict) -> bool:
+    payload = {
+        "event": alert["tur"],
+        "alertId": alert["id"],
+        "il": alert["il"],
+        "ilce": alert.get("ilce"),
+        "esik": alert.get("esik"),
+        "olcum": olcum,
+        "tetiklenmeZamani": _iso_now(),
+    }
+    try:
+        resp = requests.post(alert["webhookUrl"], json=payload, timeout=ALERT_WEBHOOK_TIMEOUT)
+        return resp.status_code < 400
+    except requests.RequestException as exc:
+        logger.warning("Webhook gönderilemedi (%s): %s", alert["webhookUrl"], exc)
+        return False
+
+
+def _alert_kontrol_calistir() -> dict:
+    """Tüm alertleri değerlendirir, tetiklenenlere webhook gönderir.
+    /api/v1/alerts/check ve iç zamanlayıcı tarafından çağrılır."""
+    sonuc = {"kontrolEdilen": 0, "tetiklenen": 0, "hataliWebhook": 0}
+    for alert in _alert_tumunu_al():
+        sonuc["kontrolEdilen"] += 1
+        try:
+            tetiklendi, olcum = _alert_degerlendir(alert)
+        except MGMWeatherError as exc:
+            logger.warning("Alert %s değerlendirilemedi: %s", alert.get("id"), exc)
+            continue
+
+        if alert["tur"] in ALERT_OLAY_BAZLI_TURLER:
+            alert["sonDurum"] = olcum
+
+        if tetiklendi:
+            sonuc["tetiklenen"] += 1
+            alert["sonTetiklenme"] = _iso_now()
+            if not _alert_webhook_gonder(alert, olcum):
+                sonuc["hataliWebhook"] += 1
+
+        _alert_kayit_guncelle(alert)
+    return sonuc
+
+
+def _ic_zamanlayiciyi_baslat() -> None:
+    if os.getenv("ENABLE_INTERNAL_SCHEDULER", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+    except ImportError as exc:
+        raise RuntimeError(
+            "ENABLE_INTERNAL_SCHEDULER=true ama APScheduler kurulu değil. "
+            "`pip install APScheduler` veya `pip install .[zamanlayici]` çalıştırın."
+        ) from exc
+
+    dakika = int(os.getenv("APP_SCHEDULER_INTERVAL_DAKIKA", "10"))
+    zamanlayici = BackgroundScheduler(daemon=True)
+    zamanlayici.add_job(_alert_kontrol_calistir, "interval", minutes=dakika)
+    zamanlayici.start()
+    logger.info("İç zamanlayıcı başlatıldı (%d dakikada bir alert kontrolü).", dakika)
 
 
 def _hata_yanit(exc: Exception, kod: int = 502):
@@ -762,6 +1096,79 @@ def favori_hava_durumu(liste_id: str):
     return jsonify({"basarili": True, "veri": sonuclar})
 
 
+@app.post("/alerts/<liste_id>")
+def alert_ekle(liste_id: str):
+    """Bir alert kaydı ekler, bkz. modül docstring'i."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    if not request.is_json:
+        return jsonify(
+            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
+        ), 400
+    govde = request.get_json(silent=True)
+    if not isinstance(govde, dict):
+        return jsonify({"basarili": False, "hata": "Geçerli bir JSON nesnesi gönderin."}), 400
+    try:
+        kayit = _alert_ekle(liste_id, govde)
+    except AlertHatasi as exc:
+        return jsonify({"basarili": False, "hata": str(exc)}), 400
+    return jsonify({"basarili": True, "veri": kayit})
+
+
+@app.delete("/alerts/<liste_id>/<alert_id>")
+def alert_sil(liste_id: str, alert_id: str):
+    """Bir alert kaydını siler."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    silindi = _alert_sil(liste_id, alert_id)
+    if not silindi:
+        return jsonify({"basarili": False, "hata": "Bu alert bulunamadı."}), 404
+    return jsonify({"basarili": True})
+
+
+@app.get("/alerts/<liste_id>")
+def alert_liste_goster(liste_id: str):
+    """Listedeki tüm alert kayıtlarını döner."""
+    if not _favori_liste_id_gecerli(liste_id):
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+            }
+        ), 400
+    return jsonify({"basarili": True, "veri": _alert_listele(liste_id)})
+
+
+@app.post("/api/v1/alerts/check")
+def alert_kontrol():
+    """
+    Kayıtlı tüm alertleri değerlendirir, tetiklenenler için webhook
+    gönderir. Authorization: Bearer <CRON_SECRET> ile korunur. Sunucu
+    içinde otomatik bir zamanlayıcı YOKTUR, bu uç nokta dışarıdan
+    (GitHub Actions cron, crontab vb.) periyodik çağrılmalıdır.
+    """
+    cron_secret = os.getenv("CRON_SECRET") or os.getenv("APP_CRON_SECRET")
+    if not cron_secret:
+        return jsonify(
+            {"basarili": False, "hata": "CRON_SECRET tanımlı değil, bu uç nokta devre dışı."}
+        ), 503
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {cron_secret}":
+        return jsonify({"basarili": False, "hata": "Yetkisiz."}), 401
+    sonuc = _alert_kontrol_calistir()
+    return jsonify({"basarili": True, "veri": sonuc})
+
+
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
     try:
@@ -1059,6 +1466,8 @@ if __name__ == "__main__":
     host = os.getenv("APP_HOST", "127.0.0.1")
     port = int(os.getenv("APP_PORT", "5000"))
     server = os.getenv("APP_SERVER", "waitress").strip().lower()
+
+    _ic_zamanlayiciyi_baslat()
 
     if server == "waitress":
         try:

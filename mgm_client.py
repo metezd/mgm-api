@@ -1003,6 +1003,7 @@ class MGMWeather:
             "denizSeviyesiBasinc": kayit.get("denizeIndirgenmisBasinc"),
             "durumKodu": kod,
             "durum": CONDITION_CODES.get(kod, kod),
+            "yagis": kayit.get("yagis00Now"),
             "olcumZamani": kayit.get("veriZamani"),
         }
 
@@ -1024,7 +1025,8 @@ class MGMWeather:
             "longitude": boylam,
             "current": (
                 "temperature_2m,relative_humidity_2m,wind_speed_10m,"
-                "wind_direction_10m,surface_pressure,pressure_msl,weather_code"
+                "wind_direction_10m,surface_pressure,pressure_msl,weather_code,"
+                "precipitation"
             ),
             "timezone": "Europe/Istanbul",
         }
@@ -1052,6 +1054,7 @@ class MGMWeather:
                 "denizSeviyesiBasinc": veri.get("pressure_msl"),
                 "durumKodu": kod,
                 "durum": WMO_CONDITION_CODES.get(kod, kod),
+                "yagis": veri.get("precipitation"),
                 "olcumZamani": veri.get("time"),
             }
 

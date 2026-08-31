@@ -97,6 +97,10 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `POST/DELETE` | `/favoriler/<liste_id>` | Favori il/ilçe ekle/sil (`{"sorgu": "kadikoy/istanbul"}`). Hesap/kimlik doğrulama yoktur, `liste_id`'yi istemci seçer. Onu bilen herkes listeyi düzenler. Liste başına en fazla `APP_FAVORI_MAX_KAYIT` kayıt. |
 | `GET` | `/favoriler/<liste_id>` | Listedeki tüm favoriler için hava durumunu `/toplu` mantığıyla tek istekte döner. |
 | `GET` | `/favoriler/<liste_id>/liste` | Hava durumu çekmeden kayıtlı sorguları döner (hafif). |
+| `POST` | `/alerts/<liste_id>` | Webhook alert kaydı ekler (`{"tur", "il", "webhookUrl", "esik", "yon"}`). Kimlik doğrulama yok, favoriler ile aynı `liste_id` modeli. |
+| `DELETE` | `/alerts/<liste_id>/<alert_id>` | Alert kaydını siler. |
+| `GET` | `/alerts/<liste_id>` | Listedeki tüm alert kayıtlarını döner. |
+| `POST` | `/api/v1/alerts/check` | Kayıtlı tüm alertleri değerlendirir, tetiklenenlere webhook gönderir. `Authorization: Bearer <CRON_SECRET>` gerekir. |
 | `GET` | `/map/geojson` | Leaflet/Mapbox için hazır, 81 ilin anlık sıcaklığıyla birleşmiş GeoJSON. |
 | `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski, 5 günlük tahmine dayalı sezgisel sınıflandırma. MGM'nin resmi don uyarı ürünü değildir. |
 | `GET` | `/metrics` | Prometheus formatında sistem metrikleri (cache, HTTP süresi, circuit breaker). |
@@ -115,6 +119,34 @@ Favoriler
 - Limit: Liste başına en fazla 30 kayıt (APP_FAVORI_MAX_KAYIT).
 - Kalıcılık: REDIS_URL varsa Redis'te kalıcı tutulur, worker/instance'lar paylaşır.
 - Toplu okuma: `GET /favoriler/<liste_id>`, tüm sorgular için `/toplu` mantığıyla hava durumunu döner.
+
+Alert / Webhook Motoru
+-----------------------
+- Türler: `weather.temp_threshold`, `weather.wind_gust_exceeded`, `weather.rain_threshold` (eşik bazlı, koşul doğru olduğu her kontrolde tetiklenir), `weather.rain_started`, `weather.rain_stopped`, `weather.warning_issued` (olay bazlı, yalnızca durum değişiminde bir kez tetiklenir), `weather.frost_risk` (eşik bir don seviyesi adıdır, örn. `"Hafif Don"`).
+- Kimlik doğrulama yok, favoriler ile aynı `liste_id` modeli. Limit: liste başına 30 kayıt (APP_ALERT_MAX_KAYIT).
+- Sunucu içinde zamanlayıcı YOKTUR. `POST /api/v1/alerts/check`, `Authorization: Bearer <CRON_SECRET>` ile korunur ve dışarıdan periyodik çağrılmalıdır:
+
+  **GitHub Actions** (`.github/workflows/alert-check.yml`), her 10 dakikada bir:
+  ```yaml
+  on:
+    schedule:
+      - cron: "*/10 * * * *"
+  jobs:
+    check:
+      runs-on: ubuntu-latest
+      steps:
+        - run: |
+            curl -X POST -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              https://<render-url>/api/v1/alerts/check
+  ```
+
+  **Linux crontab**:
+  ```bash
+  */10 * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:5000/api/v1/alerts/check
+  ```
+
+  **Opsiyonel yerel/test modu** (üretimde önerilmez, tek worker'da çalışır): `ENABLE_INTERNAL_SCHEDULER=true` ile uygulama içinde APScheduler tabanlı bir zamanlayıcı açılır (`pip install .[zamanlayici]` gerekir), `APP_SCHEDULER_INTERVAL_DAKIKA` ile aralık ayarlanır.
+- Webhook payload'ı: `{"event", "alertId", "il", "ilce", "esik", "olcum", "tetiklenmeZamani"}`.
 
 ## Daha fazlası
 

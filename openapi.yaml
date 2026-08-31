@@ -24,6 +24,8 @@ tags:
     description: GeoJSON harita verisi (Leaflet/Mapbox uyumlu)
   - name: favoriler
     description: Kimlik doğrulamasız, istemci tanımlı liste_id ile favori il/ilçe listeleri
+  - name: alerts
+    description: Koşul sağlandığında webhook tetikleyen alert kayıtları
   - name: durum
     description: Servis sağlığı
 
@@ -385,6 +387,162 @@ paths:
                       $ref: "#/components/schemas/FavoriKaydi"
         "400":
           description: Geçersiz liste_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /alerts/{liste_id}:
+    parameters:
+      - name: liste_id
+        in: path
+        required: true
+        schema: { type: string, pattern: "^[A-Za-z0-9_-]{3,64}$" }
+        description: >
+          Favoriler ile aynı model, istemcinin kendi seçtiği bir kimlik.
+          Hesap/kimlik doğrulama YOKTUR.
+    post:
+      tags: [alerts]
+      summary: Alert/webhook kaydı ekle
+      description: >
+        Belirtilen tür/eşik koşulu sağlandığında webhookUrl'e POST atacak
+        bir alert kaydı oluşturur. Liste başına en fazla APP_ALERT_MAX_KAYIT
+        (varsayılan 30) kayıt.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tur, il, webhookUrl]
+              properties:
+                tur:
+                  type: string
+                  enum:
+                    - weather.temp_threshold
+                    - weather.wind_gust_exceeded
+                    - weather.rain_threshold
+                    - weather.rain_started
+                    - weather.rain_stopped
+                    - weather.frost_risk
+                    - weather.warning_issued
+                il: { type: string, example: "İstanbul" }
+                ilce: { type: string, nullable: true }
+                webhookUrl: { type: string, example: "https://example.com/hook" }
+                esik:
+                  description: >
+                    Türe göre anlamı değişir: sıcaklık/rüzgar/yağış için
+                    sayısal eşik, frost_risk için bir don seviyesi adı
+                    (örn. "Hafif Don"). Olay bazlı türlerde (rain_started/
+                    stopped, warning_issued) kullanılmaz.
+                  example: 38
+                yon:
+                  type: string
+                  enum: [ustunde, altinda]
+                  default: ustunde
+                  description: Yalnızca weather.temp_threshold için.
+      responses:
+        "200":
+          description: Kayıt oluşturuldu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/AlertKaydi"
+        "400":
+          description: Geçersiz tur/il/webhookUrl ya da liste limiti aşıldı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+    get:
+      tags: [alerts]
+      summary: Alert listesini göster
+      responses:
+        "200":
+          description: Kayıtlı alertler
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AlertKaydi"
+        "400":
+          description: Geçersiz liste_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /alerts/{liste_id}/{alert_id}:
+    delete:
+      tags: [alerts]
+      summary: Alert kaydını sil
+      parameters:
+        - name: liste_id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{3,64}$" }
+        - name: alert_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Silindi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+        "404":
+          description: Alert bulunamadı
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+
+  /api/v1/alerts/check:
+    post:
+      tags: [alerts]
+      summary: Alertleri değerlendir, tetiklenenlere webhook gönder
+      description: >
+        Sunucu içinde otomatik bir zamanlayıcı yoktur, bu uç nokta
+        dışarıdan (GitHub Actions cron, crontab vb.) periyodik
+        çağrılmalıdır. Authorization: Bearer <CRON_SECRET> gerektirir.
+      security:
+        - cronSecret: []
+      responses:
+        "200":
+          description: Kontrol sonucu
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    type: object
+                    properties:
+                      kontrolEdilen: { type: integer }
+                      tetiklenen: { type: integer }
+                      hataliWebhook: { type: integer }
+        "401":
+          description: Authorization header eksik/yanlış
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HataYaniti"
+        "503":
+          description: CRON_SECRET tanımlı değil, uç nokta devre dışı
           content:
             application/json:
               schema:
@@ -775,6 +933,11 @@ paths:
                   mgm_circuit_breaker_state 0.0
 
 components:
+  securitySchemes:
+    cronSecret:
+      type: http
+      scheme: bearer
+      description: "Authorization: Bearer <CRON_SECRET>"
   parameters:
     IlPath:
       name: il
@@ -1190,3 +1353,21 @@ components:
       properties:
         sorgu: { type: string, example: "kadikoy/istanbul" }
         eklenmeTarihi: { type: string, example: "2026-08-26T11:10:45Z" }
+
+    AlertKaydi:
+      type: object
+      properties:
+        id: { type: string, example: "4cd8d4693085" }
+        listeId: { type: string }
+        tur: { type: string, example: "weather.temp_threshold" }
+        il: { type: string, example: "İstanbul" }
+        ilce: { type: string, nullable: true }
+        webhookUrl: { type: string }
+        esik: { nullable: true, example: 38 }
+        yon: { type: string, nullable: true, example: "ustunde" }
+        sonDurum:
+          type: object
+          nullable: true
+          description: Olay bazlı türlerde bir sonraki karşılaştırma için saklanan son ölçüm.
+        sonTetiklenme: { type: string, nullable: true }
+        olusturmaTarihi: { type: string }

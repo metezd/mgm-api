@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 redis = ["redis>=5.0"]
+zamanlayici = ["APScheduler>=3.10"]
 sunucu = [
     "flask>=3.0",
     "flask-compress>=1.15",
