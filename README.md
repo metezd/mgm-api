@@ -24,7 +24,7 @@ Docker olmadan çalıştırmak, geliştirme ortamı kurmak veya buluta (Render v
 
 ## Gömülü Kullanım
 
-`mgm_client.py` bağımsız bir Python modülüdür, Flask'a veya bir HTTP sunucusuna ihtiyaç duymaz. Kendi scriptine/uygulamana gömüp doğrudan çağırabilirsin:
+`mgm_client.py` Flask veya bir HTTP sunucusuna ihtiyaç duymaz. Herhangi bir uygulamaya gömülüp çağırılabilir:
 
 ```bash
 pip install .          # sadece requests + tzdata kurulur
@@ -40,8 +40,9 @@ print(mgm.hava_durumu("İstanbul", "Kadıköy"))
 Redis ve tam sunucu bağımlılıkları (Flask, prometheus-client vb.) isteğe bağlıdır:
 
 ```bash
-pip install .[redis]     # cache ve rate limit için Redis desteği
-pip install .[sunucu]    # app.py'yi çalıştırmak için tam sunucu bağımlılıkları
+pip install mgm-tr[redis]     # cache ve rate limit için Redis desteği
+pip install mgm-tr[sunucu]    # app.py'yi çalıştırmak için tam sunucu bağımlılıkları
+pip install mgm-tr[zamanlayici]  # opsiyonel iç alert zamanlayıcısı (APScheduler)
 ```
 
 Hızlı komut satırı testi:
@@ -76,7 +77,7 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 
 ## Endpoint Referansı
 
-Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`** (Swagger UI) adresinde mevcuttur.
+Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`** içinde
 
 | HTTP Metodu | Endpoint | Açıklama |
 | :--- | :--- | :--- |
@@ -103,7 +104,7 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `POST` | `/api/v1/alerts/check` | Kayıtlı tüm alertleri değerlendirir, tetiklenenlere webhook gönderir. `Authorization: Bearer <CRON_SECRET>` gerekir. |
 | `GET` | `/map/geojson` | Leaflet/Mapbox için hazır, 81 ilin anlık sıcaklığıyla birleşmiş GeoJSON. |
 | `GET` | `/don-uyarisi/<il>` | Tarımsal don/kırağı riski, 5 günlük tahmine dayalı sezgisel sınıflandırma. MGM'nin resmi don uyarı ürünü değildir. |
-| `GET` | `/metrics` | Prometheus formatında sistem metrikleri (cache, HTTP süresi, circuit breaker). |
+| `GET` | `/metrics` | Prometheus formatında sistem ölçüleri |
 
 Rate Limiting (İstek Sınırlandırması)
 -----------------------------------
@@ -145,7 +146,7 @@ Alert / Webhook Motoru
   */10 * * * * curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:5000/api/v1/alerts/check
   ```
 
-  **Opsiyonel yerel/test modu** (üretimde önerilmez, tek worker'da çalışır): `ENABLE_INTERNAL_SCHEDULER=true` ile uygulama içinde APScheduler tabanlı bir zamanlayıcı açılır (`pip install .[zamanlayici]` gerekir), `APP_SCHEDULER_INTERVAL_DAKIKA` ile aralık ayarlanır.
+  **Test modu**: `ENABLE_INTERNAL_SCHEDULER=true` ile uygulama içinde APScheduler tabanlı bir zamanlayıcı açılır (`pip install .[zamanlayici]` gerekir), `APP_SCHEDULER_INTERVAL_DAKIKA` ile aralık ayarlanır.
 - Webhook payload'ı: `{"event", "alertId", "il", "ilce", "esik", "olcum", "tetiklenmeZamani"}`.
 
 ## Daha fazlası

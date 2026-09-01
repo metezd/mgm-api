@@ -17,6 +17,8 @@ Kullanım:
 
 from __future__ import annotations
 
+__version__ = "0.1.0"  # pyproject.toml'daki version ile birlikte güncellenmeli
+
 import copy
 import datetime as _dt
 import difflib
