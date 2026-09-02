@@ -1,0 +1,30 @@
+name: PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  #
+
+    steps:
+      - name: Repoyu Klonla
+        uses: actions/checkout@v4
+
+      - name: Python Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Aracını Kur
+        run: pip install build
+
+      - name: Paketi Derle (sdist + wheel)
+        run: python -m build
+
+      - name: PyPI'a Yükle
+        uses: pypa/gh-action-pypi-publish@release/v1
