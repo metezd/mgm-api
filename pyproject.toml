@@ -51,5 +51,20 @@ line-length = 115
 target-version = "py313"
 
 [tool.ruff.lint]
-# Bilinçli olarak dar bir set gerçek hataları ve import sıralamasını yakalar
-select = ["E", "F", "I"]
+select = [
+    "E",   # pycodestyle hatalar
+    "F",   # pyflakes (kullanılmayan import/değişken, tanımsız isim vb.)
+    "I",   # import sıralaması
+    "W",   # pycodestyle uyarılar
+    "B",   # flake8-bugbear (mutable default arg, yanlış except sırası vb. gerçek buglar)
+    "C4",  # flake8-comprehensions (gereksiz list()/dict() sarmalayıcılar)
+    "UP",  # pyupgrade (modern Python sözdizimi önerileri)
+    "SIM", # flake8-simplify
+    "RUF", # ruff'a özgü ek kontroller
+]
+ignore = [
+    # RUF001-003: "belirsiz Unicode karakter" uyarıları Türkçe metindeki
+    # her ı/ğ/ş/ö/ü/ç harfini işaretliyor, Türkçe bir kod tabanında saf
+    # gürültü üretir. N (pep8-naming) de aynı gerekçeyle select'te yok.
+    "RUF001", "RUF002", "RUF003",
+]

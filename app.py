@@ -55,10 +55,10 @@ Uç noktalar:
            sınıflandırmadır, kesin klinik eşik değildir.
 
     GET /deniz/<il>?ilce=<ilce>&lat=&lon=
-        -> Deniz suyu sıcaklığı ÖNCELİKLE MGM'nin Piri Reis istasyon verisinden, 
-           başarısız olursa Open-Meteo Marine API'sinden gelir 
-           dalga verisi her zaman Open-Meteo'dan gelir (Piri Reis kaynağında yok). 
-           "kaynaklar" alanı hangi verinin nereden geldiğini gösterir. 
+        -> Deniz suyu sıcaklığı ÖNCELİKLE MGM'nin Piri Reis istasyon verisinden,
+           başarısız olursa Open-Meteo Marine API'sinden gelir
+           dalga verisi her zaman Open-Meteo'dan gelir (Piri Reis kaynağında yok).
+           "kaynaklar" alanı hangi verinin nereden geldiğini gösterir.
            Kıyıya daha yakın bir koordinat için isteğe bağlı ?lat=&lon= ile override
            edilebilir. İkisi de kapsam dışıysa tüm alanlar null döner
            "kapsamDisi": true ile işaretlenir
@@ -282,7 +282,7 @@ def _rate_limit_kontrol(
     Redis yapılandırılmış ve erişilebilirse INCR+EXPIRE tabanlı sabit
     pencere sayaç kullanılır (mgm.redis_client ile paylaşılan bağlantı)
     bu sayede birden fazla instance aynı limiti paylaşır. Redis
-    yoksa veya o an erişilemezse, isteği reddetmek yerine 
+    yoksa veya o an erişilemezse, isteği reddetmek yerine
     kaydırmalı pencereye (deque) düşülür.
     """
     redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
@@ -342,6 +342,32 @@ def _favori_liste_id_gecerli(liste_id: str) -> bool:
     return bool(FAVORI_LISTE_ID_REGEX.match(liste_id))
 
 
+def _liste_id_dogrula(liste_id: str):
+    """liste_id formatı geçersizse hazır bir (jsonify, 400) yanıtı döner,
+    geçerliyse None. Favoriler ve alert route'larında tekrarlanan
+    doğrulama bloğunu tek yerden yönetir, çağıran taraf `if hata: return
+    hata` ile erken dönüş yapar."""
+    if _favori_liste_id_gecerli(liste_id):
+        return None
+    return jsonify(
+        {
+            "basarili": False,
+            "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
+        }
+    ), 400
+
+
+def _json_govde_dogrula():
+    """İstek gövdesi JSON değilse hazır bir (jsonify, 400) yanıtı döner,
+    geçerliyse None. Favoriler ve alert route'larında tekrarlanan
+    kontrolü tek yerden yönetir."""
+    if request.is_json:
+        return None
+    return jsonify(
+        {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
+    ), 400
+
+
 def _favori_redis_key(liste_id: str, prefix: str) -> str:
     return f"{prefix}favoriler:{liste_id}"
 
@@ -349,7 +375,7 @@ def _favori_redis_key(liste_id: str, prefix: str) -> str:
 def _favori_kayit_olustur(sorgu: str) -> dict:
     return {
         "sorgu": sorgu,
-        "eklenmeTarihi": _dt.datetime.now(_dt.timezone.utc)
+        "eklenmeTarihi": _dt.datetime.now(_dt.UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
@@ -485,7 +511,7 @@ def _alert_redis_liste_key(liste_id: str, prefix: str) -> str:
 
 
 def _iso_now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _alert_ekle(liste_id: str, govde: dict) -> dict:
@@ -956,7 +982,7 @@ def konum():
 def toplu():
     """
     Tek istekte birden çok yer için hava durumu. Her sorgu, /ara ile
-    aynı akıllı çözümleyiciyi kullanır, yani "istanbul", "kadikoy/istanbul", 
+    aynı akıllı çözümleyiciyi kullanır, yani "istanbul", "kadikoy/istanbul",
     "maslak itü" gibi serbest metinler burada da geçerlidir.
 
     Kısmi başarısızlığa toleranslıdır: bir sorgu çözülemese bile diğerleri
@@ -997,7 +1023,7 @@ def toplu():
         ), 400
 
     # MGMWeather client thread safe yapıdadır
-    # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi, 
+    # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi,
     # sıralı toplam yerine en yavaş tekil sorgu süresine indirgenir.
     with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
         sonuclar = list(havuz.map(_hava_durumu_akilli_guvenli, sorgular))
@@ -1008,17 +1034,10 @@ def toplu():
 @app.post("/favoriler/<liste_id>")
 def favori_ekle(liste_id: str):
     """Bir favoriye sorgu ekler/günceller, bkz. modül docstring'i."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
-    if not request.is_json:
-        return jsonify(
-            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _json_govde_dogrula():
+        return hata
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
         return jsonify(
@@ -1034,17 +1053,10 @@ def favori_ekle(liste_id: str):
 @app.delete("/favoriler/<liste_id>")
 def favori_sil(liste_id: str):
     """Bir favoriden sorgu siler, bkz. modül docstring'i."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
-    if not request.is_json:
-        return jsonify(
-            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _json_govde_dogrula():
+        return hata
     body = request.get_json(silent=True)
     if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
         return jsonify(
@@ -1061,13 +1073,8 @@ def favori_sil(liste_id: str):
 @app.get("/favoriler/<liste_id>/liste")
 def favori_liste_goster(liste_id: str):
     """Hava durumu çekmeden yalnızca kayıtlı sorguları döner (hafif)."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
     return jsonify({"basarili": True, "veri": _favori_listele(liste_id)})
 
 
@@ -1078,13 +1085,8 @@ def favori_hava_durumu(liste_id: str):
     ile aynı akıllı çözümleyici + paralel yürütme, kısmi başarısızlığa
     toleranslı).
     """
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
     kayitlar = _favori_listele(liste_id)
     if not kayitlar:
         return jsonify({"basarili": True, "veri": []})
@@ -1099,17 +1101,10 @@ def favori_hava_durumu(liste_id: str):
 @app.post("/alerts/<liste_id>")
 def alert_ekle(liste_id: str):
     """Bir alert kaydı ekler, bkz. modül docstring'i."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
-    if not request.is_json:
-        return jsonify(
-            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _json_govde_dogrula():
+        return hata
     govde = request.get_json(silent=True)
     if not isinstance(govde, dict):
         return jsonify({"basarili": False, "hata": "Geçerli bir JSON nesnesi gönderin."}), 400
@@ -1123,13 +1118,8 @@ def alert_ekle(liste_id: str):
 @app.delete("/alerts/<liste_id>/<alert_id>")
 def alert_sil(liste_id: str, alert_id: str):
     """Bir alert kaydını siler."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
     silindi = _alert_sil(liste_id, alert_id)
     if not silindi:
         return jsonify({"basarili": False, "hata": "Bu alert bulunamadı."}), 404
@@ -1139,13 +1129,8 @@ def alert_sil(liste_id: str, alert_id: str):
 @app.get("/alerts/<liste_id>")
 def alert_liste_goster(liste_id: str):
     """Listedeki tüm alert kayıtlarını döner."""
-    if not _favori_liste_id_gecerli(liste_id):
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
-            }
-        ), 400
+    if hata := _liste_id_dogrula(liste_id):
+        return hata
     return jsonify({"basarili": True, "veri": _alert_listele(liste_id)})
 
 

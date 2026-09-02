@@ -19,6 +19,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"  # pyproject.toml'daki version ile birlikte güncellenmeli
 
+import contextlib
 import copy
 import datetime as _dt
 import difflib
@@ -28,9 +29,10 @@ import math
 import re
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -391,17 +393,17 @@ class MGMWeather:
     OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
     OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
     OPEN_METEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    # Deniz suyu sıcaklığı ve dalga yüksekliği: 
+    # Deniz suyu sıcaklığı ve dalga yüksekliği:
     # MGM'nin Piri Reis denizcilik sayfaları bu veriyi sağlıyor ama yalnızca
-    # tarayıcı üzerinden görüntülenen HTML sayfaları olarak. 
+    # tarayıcı üzerinden görüntülenen HTML sayfaları olarak.
     # Bu yüzden Open-Meteo Marine API kullanılıyor.
     OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
     # Next.js SSR sayfası, veri <script id="__NEXT_DATA__"> içine gömülü JSON olarak gelir.
     # Belgeli bir REST API değil bu yüzden yalnızca sıcaklık için BİRİNCİL kaynak olarak kullanılır
-    # sayfa yapısı değişirse (DOM/anahtar) MGMWeatherError fırlatılır ve 
+    # sayfa yapısı değişirse (DOM/anahtar) MGMWeatherError fırlatılır ve
     # deniz_durumu() otomatik olarak Open-Meteo'ya düşer.
     PIRI_REIS_DENIZ_SUYU_URL = "https://pirireis.mgm.gov.tr/deniz-suyu-sicakliklari"
-    PIRI_REIS_HEADERS = {
+    PIRI_REIS_HEADERS: ClassVar[dict[str, str]] = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like "
             "Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -427,14 +429,14 @@ class MGMWeather:
     )
     # GeoJSON kaynağındaki bazı il adları MGM/81-il listesiyle birebir
     # eşleşmez (kısaltma/varyant), difflib toleransı bunları yakalayamayabilir.
-    GEOJSON_IL_ALIASLARI = {
+    GEOJSON_IL_ALIASLARI: ClassVar[dict[str, str]] = {
         "afyon": "Afyonkarahisar",
         "k. maras": "Kahramanmaraş",
         "kahramanmaras": "Kahramanmaraş",
         "k.maras": "Kahramanmaraş",
     }
 
-    HEADERS = {
+    HEADERS: ClassVar[dict[str, str]] = {
         "Host": "servis.mgm.gov.tr",
         "Accept": "application/json, text/plain, */*",
         "User-Agent": (
@@ -587,7 +589,7 @@ class MGMWeather:
                 sonuc = loader()
                 self._cache_set(key, sonuc)
                 self._redis_set(key, sonuc)
-            except BaseException as exc:  # noqa: BLE001 - bekleyenlere her hata paylaşılır
+            except BaseException as exc:
                 kayit.hata = exc
                 kayit.event.set()
                 with self._in_flight_lock:
@@ -1181,7 +1183,7 @@ class MGMWeather:
     def _piri_reis_deniz_istasyonlari(self) -> list[dict[str, Any]]:
         """
         MGM'nin Piri Reis "Deniz Suyu Sıcaklıkları" sayfasını çekip <script id="__NEXT_DATA__"> ,
-        içine gömülü JSON'dan istasyon listesi ve anlık sıcaklıkları ayıklar. 
+        içine gömülü JSON'dan istasyon listesi ve anlık sıcaklıkları ayıklar.
         Bu resmi bir REST API DEĞİLDİR Bu yüzden sadece birincil kaynak olarak kullanılır
         herhangi bir adımda başarısız olursa Open-Meteo'ya düşer.
         """
@@ -1516,11 +1518,11 @@ class MGMWeather:
         }
         return sonuc
 
-    # Polen ve alerji indeksi (tur_esik_dusuk, tur_esik_orta, tur_esik_yuksek) 
+    # Polen ve alerji indeksi (tur_esik_dusuk, tur_esik_orta, tur_esik_yuksek)
     # grains/m³ EAN/CAMS tabanlı yaygın kullanılan yaklaşık eşikler
-    # kesin klinik eşikler türe ve bölgeye göre değişebilir, 
+    # kesin klinik eşikler türe ve bölgeye göre değişebilir,
     # bu sınıflandırma genel bir yönlendirme amaçlıdır, tıbbi tavsiye değildir.
-    POLEN_TURLERI = {
+    POLEN_TURLERI: ClassVar[dict[str, tuple[str, int, int, int]]] = {
         "grass_pollen": ("cimen", 20, 50, 150),
         "birch_pollen": ("huş", 30, 90, 500),
         "alder_pollen": ("kızılağaç", 30, 90, 300),
@@ -1666,7 +1668,7 @@ class MGMWeather:
 
         Kaynak önceliği: deniz suyu sıcaklığı için ÖNCELİK MGM'nin Piri
         Reis sayfasındaki (pirireis.mgm.gov.tr) gerçek istasyon
-        ölçümlerindedir. Dalga yüksekliği/periyodu/yönü Piri Reis kaynağında bulunmadığından 
+        ölçümlerindedir. Dalga yüksekliği/periyodu/yönü Piri Reis kaynağında bulunmadığından
         Open-Meteo'dan gelir. Döndürülen sözlükte `kaynaklar` alanı hangi verinin nereden geldiğini gösterir.
 
         Kapsam notu: Open-Meteo'nun deniz modeli yalnızca deniz
@@ -1898,7 +1900,7 @@ class MGMWeather:
     )
     _SINODIK_AY_GUN = 29.530588861
     # 2000-01-06 18:14 UTC referans yeni ay (bilinen astronomik epoch)
-    _AY_EPOKU = _dt.datetime(2000, 1, 6, 18, 14, tzinfo=_dt.timezone.utc)
+    _AY_EPOKU = _dt.datetime(2000, 1, 6, 18, 14, tzinfo=_dt.UTC)
 
     def ay_evresi(self, tarih: _dt.date | None = None) -> dict[str, Any]:
         """
@@ -1909,9 +1911,9 @@ class MGMWeather:
         buyuyorMu (bir sonraki dolunaya mı yaklaşıyor).
         """
         an = _dt.datetime.combine(
-            tarih or _dt.datetime.now(_dt.timezone.utc).date(),
+            tarih or _dt.datetime.now(_dt.UTC).date(),
             _dt.time(hour=12),
-            tzinfo=_dt.timezone.utc,
+            tzinfo=_dt.UTC,
         )
         gecen_gun = (an - self._AY_EPOKU).total_seconds() / 86400.0
         yas = gecen_gun % self._SINODIK_AY_GUN
@@ -2000,7 +2002,7 @@ class MGMWeather:
         il_adlari = sorted({kayit["il"] for kayit in TURKIYE_ILLERI})
         with ThreadPoolExecutor(max_workers=min(len(il_adlari), 16)) as havuz:
             sicakliklar = dict(
-                zip(il_adlari, havuz.map(_il_sicakligi, il_adlari))
+                zip(il_adlari, havuz.map(_il_sicakligi, il_adlari), strict=True)
             )
 
         features_out = []
@@ -2133,7 +2135,7 @@ class MGMWeather:
             adaylar = []
 
         if not adaylar:
-            # GeoNames'te "maslak itü" gibi birleşik bir kayıt yoktur. 
+            # GeoNames'te "maslak itü" gibi birleşik bir kayıt yoktur.
             # Kelimeleri tek tek deneyin sonra ilk sonuç veren
             # kelimeyi kullanın. 2 karakterden kısa kelimeler atlanır.
             for parca in self._sorguyu_parcala(sorgu):
@@ -2235,10 +2237,8 @@ class MGMWeather:
             pass
 
         # Ay evresi yerel hesaplandığı için harici servise bağımlı değil
-        try:
+        with contextlib.suppress(Exception):
             sonuc["ayEvresi"] = self.ay_evresi()
-        except Exception:  # noqa: BLE001 - yerel hesap, beklenmedik durum korumas
-            pass
 
         return sonuc
 
@@ -2325,7 +2325,7 @@ class MGMWeather:
     def _nominatim_il_ilce_adaylari(adres: dict[str, Any]) -> tuple[str | None, str | None]:
         """
         Nominatim "address" objesinden il ve ilçe adaylarını çıkarır.
-        
+
         Türkiye OSM verilerinde ilçe etiketleri standart olmadığından
         (county, city_district, town, suburb veya district olabilmektedir)
         sistem sırayla tarama yapar ve ilk dolu değeri kullanır.
@@ -2342,8 +2342,8 @@ class MGMWeather:
 
     def hava_durumu_konum(self, enlem: float, boylam: float) -> dict[str, Any]:
         """
-        Koordinatları Nominatim ile ters geocoding yaparak il/ilçe adına çevirir 
-        ve MGM'de arar. MGM'de bulunamazsa (veya geocoding başarısız olursa) 
+        Koordinatları Nominatim ile ters geocoding yaparak il/ilçe adına çevirir
+        ve MGM'de arar. MGM'de bulunamazsa (veya geocoding başarısız olursa)
         Open-Meteo üzerinden anlık durumu döner (fallback).
         """
         il_adayi: str | None = None
@@ -2380,12 +2380,33 @@ class MGMWeather:
         }
 
 
-if __name__ == "__main__":
+def _cli_calistir() -> None:
+    """`python mgm_client.py <il> [ilce]` komut satırı arayüzü. Sunucu
+    gerektirmez, sadece hava_durumu()'u çağırıp sonucu JSON basar."""
+    import argparse
     import json
     import sys
 
-    il_adi = sys.argv[1] if len(sys.argv) > 1 else "İstanbul"
-    ilce_adi = sys.argv[2] if len(sys.argv) > 2 else None
+    ayiklayici = argparse.ArgumentParser(
+        prog="mgm_client.py",
+        description="MGM (Türkiye) hava durumu verisine komut satırından, HTTP sunucu olmadan erişir.",
+    )
+    ayiklayici.add_argument("il", help="İl adı (örn. İstanbul)")
+    ayiklayici.add_argument("ilce", nargs="?", default=None, help="İlçe adı (opsiyonel)")
+    ayiklayici.add_argument(
+        "--indent", type=int, default=2, help="JSON çıktısının girinti genişliği (varsayılan: 2)"
+    )
+    args = ayiklayici.parse_args()
 
     client = MGMWeather()
-    print(json.dumps(client.hava_durumu(il_adi, ilce_adi), ensure_ascii=False, indent=2))
+    try:
+        sonuc = client.hava_durumu(args.il, args.ilce)
+    except MGMWeatherError as exc:
+        print(f"Hata: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(json.dumps(sonuc, ensure_ascii=False, indent=args.indent))
+
+
+if __name__ == "__main__":
+    _cli_calistir()

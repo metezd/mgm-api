@@ -244,7 +244,7 @@ class TestStaleWhileRevalidate(unittest.TestCase):
         def istek_atan():
             try:
                 sonuclar.append(client._yukle_singleton("single-key", yavas_loader))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 hatalar.append(exc)
 
         ipler = [threading.Thread(target=istek_atan) for _ in range(5)]
@@ -586,10 +586,9 @@ class TestRedisBaslangicYenidenDeneme(unittest.TestCase):
         with (
             patch("redis.Redis.from_url", return_value=sahte_client),
             patch("mgm_client.REDIS_STARTUP_RETRY_DELAY_SECONDS", 0.01),
-            patch("mgm_client.REDIS_STARTUP_RETRY_ATTEMPTS", 3),
+            patch("mgm_client.REDIS_STARTUP_RETRY_ATTEMPTS", 3),self.assertRaises(MGMWeatherError) as ctx
         ):
-            with self.assertRaises(MGMWeatherError) as ctx:
-                MGMWeather(redis_url="redis://sahte-host:6379/0")
+            MGMWeather(redis_url="redis://sahte-host:6379/0")
 
         self.assertEqual(sahte_client.ping.call_count, 3)
         self.assertIn("3 denemeden", str(ctx.exception))
@@ -1003,11 +1002,13 @@ class TestGuncelDurumDinamikTTL(unittest.TestCase):
         client.session = _CountingSession(
             [{"sicaklik": 20.0, "hadiseKodu": "A", "veriZamani": "x"}]
         )
-        with patch.object(client, "_guncel_durum_dinamik_ttl", return_value=999):
-            with patch.object(client, "_get", wraps=client._get) as mock_get:
-                client.guncel_durum(123)
-                _, kwargs = mock_get.call_args
-                self.assertEqual(kwargs.get("ttl_override"), 999)
+        with (
+            patch.object(client, "_guncel_durum_dinamik_ttl", return_value=999),
+            patch.object(client, "_get", wraps=client._get) as mock_get,
+        ):
+            client.guncel_durum(123)
+            _, kwargs = mock_get.call_args
+            self.assertEqual(kwargs.get("ttl_override"), 999)
 
 
 class TestTahminAyriTTL(unittest.TestCase):
