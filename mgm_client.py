@@ -1442,7 +1442,12 @@ class MGMWeather:
 
     def son_gozlemler(self) -> dict[str, Any]:
         # sondurumlar/ilmerkezleri sadece istNo döner. il adı için
-        # merkezler/iller ile eşleştirip TURKIYE_ILLERI plaka->il çözülür
+        # merkezler/iller ile eşleştirip TURKIYE_ILLERI plaka->il çözülür.
+        # merkezler/iller'in alan adları (sondurumIstNo, ilPlaka) JS
+        # kaynağından çıkarım, gerçek bir yanıt örneği görülmedi. Bu
+        # yüzden eşleştirme oranı düşükse (alan adları değişmiş/yanlış
+        # tahmin edilmiş olabilir) sessizce geçmek yerine yanıta bir
+        # uyarı ekleniyor.
         iller = self._cached_get(
             self._cache_key("merkezler-iller"),
             lambda: self._get("merkezler/iller"),
@@ -1463,7 +1468,17 @@ class MGMWeather:
         for k in veri:
             plaka = istno_plaka.get(k.get("istNo"))
             kayitlar.append({**k, "il": plaka_il.get(plaka)})
-        return {"kayitlar": kayitlar}
+
+        sonuc: dict[str, Any] = {"kayitlar": kayitlar}
+        cozulen = sum(1 for k in kayitlar if k.get("il"))
+        if kayitlar and cozulen / len(kayitlar) < 0.5:
+            sonuc["_uyari"] = (
+                f"İl adı eşleştirmesi düşük oranda başarılı oldu "
+                f"({cozulen}/{len(kayitlar)}). merkezler/iller uç noktasının "
+                "alan adları (sondurumIstNo, ilPlaka) değişmiş/yanlış "
+                "tahmin edilmiş olabilir, doğrulanmalı."
+            )
+        return sonuc
 
     def hava_kalitesi(self, enlem: float, boylam: float) -> dict[str, Any]:
         """Anlık UV indeksi ve hava kalitesi (PM10, PM2.5, NO2) döner.
