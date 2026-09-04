@@ -542,5 +542,116 @@ class TestAlertTransitions(unittest.TestCase):
         self.assertTrue(alert["sonDurum"]["yagisli"])
 
 
+class _FakeWebhookResponse:
+    def __init__(self, chunks: list[bytes], headers: dict[str, str] | None = None, status_code: int = 200):
+        self.chunks = chunks
+        self.headers = headers or {}
+        self.status_code = status_code
+        self.closed = False
+
+    def iter_content(self, chunk_size: int):
+        return iter(self.chunks)
+
+    def close(self):
+        self.closed = True
+
+
+class TestWebhookSSRF(unittest.TestCase):
+    def _alert(self, url: str = "https://webhook.example/path") -> dict:
+        return {
+            "id": "alert-id",
+            "tur": "weather.rain_started",
+            "il": "İstanbul",
+            "ilce": None,
+            "webhookUrl": url,
+            "esik": None,
+        }
+
+    def test_webhook_kaydi_sadece_https_ve_izinli_portu_kabul_eder(self):
+        for url in ("http://webhook.example", "https://webhook.example:8443"):
+            with self.subTest(url=url):
+                with self.assertRaises(app_module.AlertHatasi):
+                    app_module._alert_ekle(
+                        "test-listesi",
+                        {
+                            "tur": "weather.rain_started",
+                            "il": "İstanbul",
+                            "webhookUrl": url,
+                        },
+                    )
+
+    def test_webhook_ssrf_hedeflerini_reddeder(self):
+        hedefler = (
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "0.0.0.0",
+            "10.1.2.3",
+            "172.16.1.2",
+            "192.168.1.2",
+            "169.254.169.254",
+            "fc00::1",
+            "fe80::1",
+        )
+        for hedef in hedefler:
+            url = f"https://[{hedef}]" if ":" in hedef else f"https://{hedef}"
+            with self.subTest(hedef=hedef), patch.object(
+                app_module.socket,
+                "getaddrinfo",
+                return_value=[(app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", (hedef, 443))],
+            ):
+                with self.assertRaises(app_module.AlertHatasi):
+                    app_module._webhook_hedefini_dogrula(url)
+
+    def test_webhook_dns_sonuclarinin_tumu_guvenli_olmali(self):
+        adresler = [
+            (app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", ("10.0.0.8", 443)),
+        ]
+        with patch.object(app_module.socket, "getaddrinfo", return_value=adresler):
+            with self.assertRaises(app_module.AlertHatasi):
+                app_module._webhook_hedefini_dogrula("https://webhook.example")
+
+    def test_webhook_istegi_redirectsiz_timeoutlu_ve_stream_olarak_gonderilir(self):
+        response = _FakeWebhookResponse([b"ok"])
+        with patch.object(
+            app_module.socket,
+            "getaddrinfo",
+            return_value=[
+                (app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+            ],
+        ), patch.object(app_module.requests, "post", return_value=response) as post:
+            self.assertTrue(app_module._alert_webhook_gonder(self._alert(), {"yagisli": True}))
+
+        post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["timeout"], app_module.ALERT_WEBHOOK_TIMEOUT)
+        self.assertFalse(post.call_args.kwargs["allow_redirects"])
+        self.assertTrue(post.call_args.kwargs["stream"])
+        self.assertTrue(response.closed)
+
+    def test_webhook_response_content_length_limiti_asilirsa_reddedilir(self):
+        response = _FakeWebhookResponse(
+            [b"ok"],
+            headers={"Content-Length": str(app_module.ALERT_WEBHOOK_MAX_RESPONSE_BYTES + 1)},
+        )
+        with patch.object(
+            app_module,
+            "_webhook_hedefini_dogrula",
+            return_value=None,
+        ), patch.object(app_module.requests, "post", return_value=response):
+            self.assertFalse(app_module._alert_webhook_gonder(self._alert(), {}))
+        self.assertTrue(response.closed)
+
+    def test_webhook_response_stream_limiti_asilirsa_reddedilir(self):
+        response = _FakeWebhookResponse([b"x" * (app_module.ALERT_WEBHOOK_MAX_RESPONSE_BYTES + 1)])
+        with patch.object(
+            app_module,
+            "_webhook_hedefini_dogrula",
+            return_value=None,
+        ), patch.object(app_module.requests, "post", return_value=response):
+            self.assertFalse(app_module._alert_webhook_gonder(self._alert(), {}))
+        self.assertTrue(response.closed)
+
+
 if __name__ == "__main__":
     unittest.main()

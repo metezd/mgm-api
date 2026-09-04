@@ -149,16 +149,19 @@ Rate limiting:
 from __future__ import annotations
 
 import datetime as _dt
+import ipaddress
 import json
 import logging
 import os
 import random
 import re
+import socket
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import SplitResult, urlsplit
 
 import requests
 from flask import Flask, Response, g, jsonify, request
@@ -484,6 +487,10 @@ ALERT_OLAY_BAZLI_TURLER = {
 ALERT_MAX_KAYIT = int(os.getenv("APP_ALERT_MAX_KAYIT", "30"))
 ALERT_TTL_SANIYE = int(os.getenv("APP_ALERT_TTL_SANIYE", str(90 * 24 * 3600)))
 ALERT_WEBHOOK_TIMEOUT = float(os.getenv("APP_ALERT_WEBHOOK_TIMEOUT_SANIYE", "5"))
+ALERT_WEBHOOK_MAX_RESPONSE_BYTES = int(
+    os.getenv("APP_ALERT_WEBHOOK_MAX_RESPONSE_BYTES", str(1024 * 1024))
+)
+ALERT_WEBHOOK_ALLOWED_PORTS = {443}
 ALERT_YAGISLI_HADISE_KODLARI = {
     "HY", "Y", "KY", "KKY", "HKY", "K", "KYK",
     "HSY", "SY", "KSY", "MSY", "DY", "GSY", "KGSY",
@@ -500,6 +507,53 @@ _ALERT_BELLEK_KILIT = threading.Lock()
 
 class AlertHatasi(Exception):
     """Alert özelliğine özgü kullanıcı hataları (geçersiz tur, limit aşımı vb.)."""
+
+
+def _webhook_url_ayristir(webhook_url: str) -> SplitResult:
+    try:
+        parsed = urlsplit(webhook_url)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise AlertHatasi("'webhookUrl' geçerli bir HTTPS URL olmalıdır.") from exc
+    if parsed.scheme.lower() != "https" or not hostname:
+        raise AlertHatasi("'webhookUrl' yalnızca https URL olmalıdır.")
+    if parsed.username or parsed.password:
+        raise AlertHatasi("'webhookUrl' kullanıcı bilgisi içeremez.")
+    if port is not None and port not in ALERT_WEBHOOK_ALLOWED_PORTS:
+        raise AlertHatasi("'webhookUrl' yalnızca 443 portunu kullanabilir.")
+    return parsed
+
+
+def _webhook_guvenli_ipleri_getir(hostname: str, port: int) -> list[str]:
+    try:
+        adresler = socket.getaddrinfo(
+            hostname,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise AlertHatasi("Webhook hostname'i çözümlenemedi.") from exc
+
+    try:
+        ip_ler = {ipaddress.ip_address(adres[4][0]) for adres in adresler}
+    except ValueError as exc:
+        raise AlertHatasi("Webhook hostname'i geçerli IP adreslerine çözümlenmedi.") from exc
+    if not ip_ler:
+        raise AlertHatasi("Webhook hostname'i için IP adresi bulunamadı.")
+    if any(
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        for ip in ip_ler
+    ):
+        raise AlertHatasi("Webhook hedefi özel, yerel veya ayrılmış bir IP adresine çözümleniyor.")
+    return [str(ip) for ip in ip_ler]
+
+
+def _webhook_hedefini_dogrula(webhook_url: str) -> SplitResult:
+    parsed = _webhook_url_ayristir(webhook_url)
+    _webhook_guvenli_ipleri_getir(parsed.hostname, parsed.port or 443)
+    return parsed
 
 
 def _alert_redis_all_key(prefix: str) -> str:
@@ -522,8 +576,9 @@ def _alert_ekle(liste_id: str, govde: dict) -> dict:
         raise AlertHatasi(f"Geçersiz 'tur'. Seçenekler: {', '.join(sorted(ALERT_TURLERI))}")
     if not il or not isinstance(il, str):
         raise AlertHatasi("'il' zorunludur.")
-    if not webhook_url or not isinstance(webhook_url, str) or not webhook_url.startswith(("http://", "https://")):
+    if not webhook_url or not isinstance(webhook_url, str):
         raise AlertHatasi("'webhookUrl' geçerli bir http(s) URL olmalıdır.")
+    _webhook_url_ayristir(webhook_url)
 
     kayit = {
         "id": uuid.uuid4().hex[:12],
@@ -716,12 +771,31 @@ def _alert_webhook_gonder(alert: dict, olcum: dict) -> bool:
         "olcum": olcum,
         "tetiklenmeZamani": _iso_now(),
     }
+    resp = None
     try:
-        resp = requests.post(alert["webhookUrl"], json=payload, timeout=ALERT_WEBHOOK_TIMEOUT)
+        _webhook_hedefini_dogrula(alert["webhookUrl"])
+        resp = requests.post(
+            alert["webhookUrl"],
+            json=payload,
+            timeout=ALERT_WEBHOOK_TIMEOUT,
+            allow_redirects=False,
+            stream=True,
+        )
+        content_length = resp.headers.get("Content-Length")
+        if content_length is not None and int(content_length) > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
+            return False
+        response_size = 0
+        for chunk in resp.iter_content(chunk_size=8192):
+            response_size += len(chunk)
+            if response_size > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
+                return False
         return resp.status_code < 400
-    except requests.RequestException as exc:
+    except (AlertHatasi, requests.RequestException, ValueError) as exc:
         logger.warning("Webhook gönderilemedi (%s): %s", alert["webhookUrl"], exc)
         return False
+    finally:
+        if resp is not None:
+            resp.close()
 
 
 def _alert_kontrol_calistir() -> dict:
