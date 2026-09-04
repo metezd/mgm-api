@@ -155,9 +155,7 @@ import ipaddress
 import json
 import logging
 import os
-import random
 import re
-import secrets
 import socket
 import threading
 import time
@@ -170,8 +168,18 @@ import requests
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError
 
+from api.auth import ListeYetkiService
+from api.middleware import RateLimiter, route_limit_setting, validate_date_range, validate_json_body
+from api.models import (
+    AlertGovdeModel,
+    FavoriGovdeModel,
+    FavoriListeEkleModel,
+    ListeOlusturModel,
+    TopluGovdeModel,
+    WebhookPayloadModel,
+)
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
 app = Flask(__name__)
@@ -295,65 +303,22 @@ def _mgm_redis_durumu():
     return (musait and client is not None), client, prefix, hata_sinifi
 
 
+RATE_LIMITER = RateLimiter(
+    _mgm_redis_durumu,
+    TRUSTED_PROXY_NETWORKS,
+    RATE_LIMIT_BUCKETS_MAX_IZLENEN,
+)
+RATE_LIMITER.buckets = RATE_LIMIT_BUCKETS
+
+
 def _rate_limit_bellek_temizle() -> None:
-    """Boşalmış (pencere dışına çıkmış) bucket'ları dict'ten siler.
-    Her istekte değil, dict büyüdüğünde ve düşük olasılıkla çağrılır."""
-    if len(RATE_LIMIT_BUCKETS) <= RATE_LIMIT_BUCKETS_MAX_IZLENEN:
-        return
-    bos_anahtarlar = [k for k, v in RATE_LIMIT_BUCKETS.items() if not v]
-    for k in bos_anahtarlar:
-        del RATE_LIMIT_BUCKETS[k]
+    RATE_LIMITER.cleanup()
 
 
 def _rate_limit_kontrol(
     ip: str, kapsam: str, limit: int, window_seconds: int
 ) -> tuple[bool, int, int]:
-    """
-    (izin_verildi_mi, kalan_hak, reset_epoch) döner.
-
-    Redis yapılandırılmış ve erişilebilirse INCR+EXPIRE tabanlı sabit
-    pencere sayaç kullanılır (mgm.redis_client ile paylaşılan bağlantı)
-    bu sayede birden fazla instance aynı limiti paylaşır. Redis
-    yoksa veya o an erişilemezse, isteği reddetmek yerine
-    kaydırmalı pencereye (deque) düşülür.
-    """
-    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
-    if redis_musait:
-        try:
-            pencere = int(time.time() // window_seconds)
-            redis_key = f"{redis_prefix}ratelimit:{kapsam}:{ip}:{pencere}"
-            sayac = redis_client.eval(
-                RATE_LIMIT_REDIS_SCRIPT,
-                1,
-                redis_key,
-                window_seconds,
-            )
-            reset_epoch = (pencere + 1) * window_seconds
-            kalan = max(0, limit - int(sayac))
-            return int(sayac) <= limit, kalan, reset_epoch
-        except redis_hata_sinifi:
-            logger.warning(
-                "Rate limit için Redis'e erişilemedi, süreç-içi belleğe düşülüyor."
-            )
-            # aşağıya düş
-
-    with RATE_LIMIT_KILIT:
-        now = time.monotonic()
-        bucket_anahtari = f"{kapsam}:{ip}"
-        bucket = RATE_LIMIT_BUCKETS[bucket_anahtari]
-        while bucket and now - bucket[0] > window_seconds:
-            bucket.popleft()
-
-        kalan_sure = max(0.0, window_seconds - (now - bucket[0])) if bucket else 0.0
-        reset_epoch = int(time.time() + kalan_sure)
-
-        if len(bucket) >= limit:
-            return False, 0, reset_epoch
-
-        bucket.append(now)
-        if random.random() < 0.01:
-            _rate_limit_bellek_temizle()
-        return True, max(0, limit - len(bucket)), reset_epoch
+    return RATE_LIMITER.check(ip, kapsam, limit, window_seconds)
 
 
 # Hesap/kimlik doğrulama yok: liste_id istemcinin kendi seçtiği bir
@@ -379,6 +344,15 @@ def _favori_liste_id_gecerli(liste_id: str) -> bool:
     return bool(FAVORI_LISTE_ID_REGEX.match(liste_id))
 
 
+LISTE_YETKI_SERVICE = ListeYetkiService(
+    _mgm_redis_durumu,
+    _favori_liste_id_gecerli,
+    FAVORI_TTL_SANIYE,
+    int(os.getenv("APP_ALERT_TTL_SANIYE", str(90 * 24 * 3600))),
+)
+LISTE_YETKI_SERVICE.memory = _LISTE_YETKI_BELLEK
+
+
 def _liste_id_dogrula(liste_id: str):
     """liste_id formatı geçersizse hazır bir (jsonify, 400) yanıtı döner,
     geçerliyse None. Favoriler ve alert route'larında tekrarlanan
@@ -395,73 +369,22 @@ def _liste_id_dogrula(liste_id: str):
 
 
 def _liste_yetki_redis_key(liste_id: str, prefix: str) -> str:
-    return f"{prefix}liste-yetki:{liste_id}"
+    return LISTE_YETKI_SERVICE.redis_key(liste_id, prefix)
 
 
 def _token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return LISTE_YETKI_SERVICE.token_hash(token)
 
 
 def _liste_yetki_olustur(liste_id: str | None = None) -> dict[str, str]:
-    liste_id = liste_id or secrets.token_urlsafe(18)
-    if not _favori_liste_id_gecerli(liste_id):
-        raise FavoriHatasi("liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).")
-    manage_token = secrets.token_urlsafe(32)
-    read_token = secrets.token_urlsafe(32)
-    yetkiler = {
-        "manage_token_hash": _token_hash(manage_token),
-        "read_token_hash": _token_hash(read_token),
-    }
-
-    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
-    if redis_musait:
-        try:
-            key = _liste_yetki_redis_key(liste_id, redis_prefix)
-            if redis_client.exists(key):
-                raise FavoriHatasi("Bu liste_id zaten kullanılıyor.")
-            redis_client.hset(key, mapping=yetkiler)
-            redis_client.expire(key, max(FAVORI_TTL_SANIYE, ALERT_TTL_SANIYE))
-        except redis_hata_sinifi:
-            logger.warning("Liste yetkileri Redis'e yazılamadı, bellek içi depolamaya düşülüyor.")
-        else:
-            return {"listeId": liste_id, "manage_token": manage_token, "read_token": read_token}
-
-    with _LISTE_YETKI_BELLEK_KILIT:
-        if liste_id in _LISTE_YETKI_BELLEK:
-            raise FavoriHatasi("Bu liste_id zaten kullanılıyor.")
-        _LISTE_YETKI_BELLEK[liste_id] = yetkiler
-    return {"listeId": liste_id, "manage_token": manage_token, "read_token": read_token}
+    try:
+        return LISTE_YETKI_SERVICE.create(liste_id)
+    except ValueError as exc:
+        raise FavoriHatasi(str(exc)) from exc
 
 
 def _liste_yetki_dogrula(liste_id: str, gereken: str):
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return jsonify({"basarili": False, "hata": "Authorization Bearer token zorunludur."}), 401
-    token = auth[7:].strip()
-    if not token:
-        return jsonify({"basarili": False, "hata": "Authorization Bearer token zorunludur."}), 401
-
-    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
-    yetkiler = None
-    if redis_musait:
-        try:
-            ham = redis_client.hgetall(_liste_yetki_redis_key(liste_id, redis_prefix))
-            yetkiler = {
-                (key.decode() if isinstance(key, bytes) else key):
-                (value.decode() if isinstance(value, bytes) else value)
-                for key, value in ham.items()
-            }
-        except redis_hata_sinifi:
-            logger.warning("Liste yetkileri Redis'ten okunamadı, bellek içi depolamaya düşülüyor.")
-
-    if yetkiler is None:
-        with _LISTE_YETKI_BELLEK_KILIT:
-            yetkiler = dict(_LISTE_YETKI_BELLEK.get(liste_id, {}))
-
-    beklenen = yetkiler.get(f"{gereken}_token_hash")
-    if not beklenen or not hmac.compare_digest(beklenen, _token_hash(token)):
-        return jsonify({"basarili": False, "hata": "Yetkisiz."}), 401
-    return None
+    return LISTE_YETKI_SERVICE.authorize(liste_id, gereken)
 
 
 def _json_govde_dogrula():
@@ -482,9 +405,7 @@ def _favori_redis_key(liste_id: str, prefix: str) -> str:
 def _favori_kayit_olustur(sorgu: str) -> dict:
     return {
         "sorgu": sorgu,
-        "eklenmeTarihi": _dt.datetime.now(_dt.UTC)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
+        "eklenmeTarihi": _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
 
 
@@ -493,32 +414,24 @@ def _favori_ekle(liste_id: str, sorgu: str) -> dict:
     if not sorgu:
         raise FavoriHatasi("'sorgu' boş olamaz.")
     if len(sorgu) > FAVORI_SORGU_MAX_UZUNLUK:
-        raise FavoriHatasi(
-            f"'sorgu' en fazla {FAVORI_SORGU_MAX_UZUNLUK} karakter olabilir."
-        )
+        raise FavoriHatasi(f"'sorgu' en fazla {FAVORI_SORGU_MAX_UZUNLUK} karakter olabilir.")
     slug = sorgu.lower()
     kayit = _favori_kayit_olustur(sorgu)
-
     redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
     if redis_musait:
         try:
             key = _favori_redis_key(liste_id, redis_prefix)
             mevcut_alanlar = {
-                a.decode() if isinstance(a, bytes) else a
-                for a in redis_client.hkeys(key)
+                alan.decode() if isinstance(alan, bytes) else alan
+                for alan in redis_client.hkeys(key)
             }
             if slug not in mevcut_alanlar and len(mevcut_alanlar) >= FAVORI_MAX_KAYIT:
-                raise FavoriHatasi(
-                    f"Bu listede en fazla {FAVORI_MAX_KAYIT} kayıt olabilir."
-                )
+                raise FavoriHatasi(f"Bu listede en fazla {FAVORI_MAX_KAYIT} kayıt olabilir.")
             redis_client.hset(key, slug, json.dumps(kayit, ensure_ascii=False))
             redis_client.expire(key, FAVORI_TTL_SANIYE)
             return kayit
         except redis_hata_sinifi:
-            logger.warning(
-                "Favori eklenemedi, bellek içi depolamaya düşülüyor."
-            )
-
+            logger.warning("Favori eklenemedi, bellek içi depolamaya düşülüyor.")
     with _FAVORI_BELLEK_KILIT:
         liste = _FAVORI_BELLEK[liste_id]
         if slug not in liste and len(liste) >= FAVORI_MAX_KAYIT:
@@ -609,75 +522,6 @@ ALERT_DON_SEVIYE_SIRASI = {
     "Risk Yok": 0, "Bilinmiyor": 0, "Kırağı Riski": 1,
     "Hafif Don": 2, "Orta Don": 3, "Kuvvetli Don": 4, "Çok Kuvvetli Don": 5,
 }
-
-
-class FavoriGovdeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    sorgu: str = Field(min_length=1, max_length=FAVORI_SORGU_MAX_UZUNLUK)
-
-
-class FavoriListeEkleModel(FavoriGovdeModel):
-    listeId: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-
-
-class ListeOlusturModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    listeId: str | None = Field(default=None, min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-
-
-class TopluGovdeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    sorgular: list[str] = Field(min_length=1)
-
-    @field_validator("sorgular")
-    @classmethod
-    def sorgular_bos_olmamalı(cls, value: list[str]) -> list[str]:
-        if len(value) > TOPLU_MAX_SORGU:
-            raise ValueError(f"en fazla {TOPLU_MAX_SORGU} sorgu gönderilebilir")
-        if any(not sorgu.strip() for sorgu in value):
-            raise ValueError("listedeki her sorgu boş olmayan bir metin olmalıdır")
-        return value
-
-
-class AlertGovdeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tur: str
-    il: str = Field(min_length=1, max_length=100)
-    ilce: str | None = Field(default=None, max_length=100)
-    webhookUrl: str = Field(min_length=1, max_length=MAX_WEBHOOK_URL_LENGTH)
-    esik: float | str | None = None
-    yon: str = "ustunde"
-
-    @field_validator("tur")
-    @classmethod
-    def tur_gecerli(cls, value: str) -> str:
-        if value not in ALERT_TURLERI:
-            raise ValueError("geçersiz alert türü")
-        return value
-
-    @field_validator("yon")
-    @classmethod
-    def yon_gecerli(cls, value: str) -> str:
-        if value not in {"ustunde", "altinda"}:
-            raise ValueError("'yon' ustunde veya altinda olmalıdır")
-        return value
-
-
-class WebhookPayloadModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    event: str
-    eventId: str
-    alertId: str
-    il: str
-    ilce: str | None = None
-    esik: float | str | None = None
-    olcum: dict
-    tetiklenmeZamani: str
 
 
 def _pydantic_govde(model_class: type[BaseModel]):
@@ -1122,69 +966,22 @@ def istek_zamanlayici():
 
 
 def _istemci_ip() -> str:
-    remote_addr = request.remote_addr or "unknown"
-    try:
-        remote_ip = ipaddress.ip_address(remote_addr)
-    except ValueError:
-        return remote_addr
-    if not any(remote_ip in network for network in TRUSTED_PROXY_NETWORKS):
-        return remote_addr
-
-    forwarded_for = request.headers.get("X-Forwarded-For", "")
-    adaylar = []
-    for aday in forwarded_for.split(","):
-        try:
-            adaylar.append(ipaddress.ip_address(aday.strip()))
-        except ValueError:
-            continue
-    for aday in reversed(adaylar):
-        if not any(aday in network for network in TRUSTED_PROXY_NETWORKS):
-            return str(aday)
-    return remote_addr
+    RATE_LIMITER.trusted_proxy_networks = TRUSTED_PROXY_NETWORKS
+    return RATE_LIMITER.client_ip()
 
 
 def _rota_rate_limit_ayari(method: str, path: str) -> tuple[str, int] | None:
-    for (route_method, route_prefix), ayar in ROUTE_RATE_LIMITS.items():
-        if route_method == method and (path == route_prefix or path.startswith(f"{route_prefix}/")):
-            return ayar
-    return None
+    return route_limit_setting(method, path, ROUTE_RATE_LIMITS)
 
 
 def _tarih_araligi_dogrula():
-    if request.path != "/gecmis":
-        return None
-    start = request.args.get("start")
-    end = request.args.get("end")
-    if not start and not end:
-        return None
-    if not start or not end:
-        return jsonify({"basarili": False, "hata": "'start' ve 'end' birlikte gönderilmelidir."}), 400
-    try:
-        baslangic = _dt.date.fromisoformat(start)
-        bitis = _dt.date.fromisoformat(end)
-    except ValueError:
-        return jsonify({"basarili": False, "hata": "Tarihler YYYY-MM-DD biçiminde olmalıdır."}), 400
-    if bitis < baslangic:
-        return jsonify({"basarili": False, "hata": "'end', 'start' tarihinden önce olamaz."}), 400
-    if (bitis - baslangic).days > MAX_DATE_RANGE_DAYS:
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": f"Tarih aralığı en fazla {MAX_DATE_RANGE_DAYS} gün olabilir.",
-            }
-        ), 400
-    return None
+    return validate_date_range(MAX_DATE_RANGE_DAYS)
 
 
 @app.before_request
 def istek_sinirlarini_kontrol_et():
-    if request.is_json and request.content_length is not None and request.content_length > MAX_JSON_BODY_BYTES:
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": f"JSON gövdesi en fazla {MAX_JSON_BODY_BYTES} byte olabilir.",
-            }
-        ), 413
+    if hata := validate_json_body(MAX_JSON_BODY_BYTES):
+        return hata
     return _tarih_araligi_dogrula()
 
 
@@ -1383,6 +1180,14 @@ def toplu():
     if hata:
         return hata
     sorgular = model.sorgular
+    if len(sorgular) > TOPLU_MAX_SORGU:
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": f"En fazla {TOPLU_MAX_SORGU} sorgu gönderebilirsiniz "
+                f"(gönderilen: {len(sorgular)}).",
+            }
+        ), 400
 
     # MGMWeather client thread safe yapıdadır
     # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi,
