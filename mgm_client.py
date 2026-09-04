@@ -23,16 +23,20 @@ import contextlib
 import copy
 import datetime as _dt
 import difflib
+import hashlib
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
+from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -73,6 +77,10 @@ CACHE_SONUC_SAYAC = Counter(
     "Cache sorgu sonucu (hit: taze, stale_hit: bayat ama sunuldu, miss: hiç yok)",
     ["sonuc"],
 )
+CACHE_KEY_NAMESPACE = "mgm-api"
+CACHE_KEY_VERSION = "v2"
+CACHE_KEY_MAX_LENGTH = 180
+CACHE_RESPONSE_MAX_BYTES = int(os.getenv("MGM_CACHE_MAX_RESPONSE_BYTES", str(2 * 1024 * 1024)))
 
 
 @dataclass
@@ -740,9 +748,42 @@ class MGMWeather:
 
         return self._cached_get(cache_key, loader, ttl_override=ttl_override)
 
+    @staticmethod
+    def _cache_key_normalize(value: Any) -> Any:
+        if isinstance(value, str):
+            value = unicodedata.normalize("NFKC", unquote(value))
+            return _tr_normalize(value)
+        if isinstance(value, dict):
+            return {
+                _tr_normalize(str(key)): MGMWeather._cache_key_normalize(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [MGMWeather._cache_key_normalize(item) for item in value]
+        return value
+
+    @staticmethod
+    def _cache_source(path: str) -> str:
+        if path.startswith("open-meteo-"):
+            return "open-meteo"
+        if path.startswith("ibb-"):
+            return "ibb"
+        if path.startswith("nominatim-"):
+            return "nominatim"
+        if path.startswith("gun-dogumu"):
+            return "sunrise-sunset"
+        return "mgm"
+
     def _cache_key(self, path: str, params: dict[str, Any] | None = None) -> str:
-        serialized = json.dumps(params or {}, sort_keys=True, ensure_ascii=False)
-        return f"{path}?{serialized}"
+        canonical = {
+            "source": self._cache_source(path),
+            "path": self._cache_key_normalize(path),
+            "params": self._cache_key_normalize(params or {}),
+        }
+        serialized = json.dumps(canonical, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        key = f"{CACHE_KEY_NAMESPACE}:{CACHE_KEY_VERSION}:{canonical['source']}:{digest}"
+        return key[:CACHE_KEY_MAX_LENGTH]
 
     def _cache_get(self, key: str) -> tuple[Any, float] | None:
         if self.cache_ttl_seconds <= 0:
@@ -759,9 +800,23 @@ class MGMWeather:
                 return None
             return copy.deepcopy(payload), yazilma_zamani
 
+    @staticmethod
+    def _cache_response_schema_dogrula(payload: Any) -> None:
+        if not isinstance(payload, (dict, list)):
+            raise MGMWeatherError("Cache yanıtı JSON object veya array olmalıdır.")
+        try:
+            serialized = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise MGMWeatherError(f"Cache yanıtı JSON schema doğrulamasından geçemedi: {exc}") from exc
+        if len(serialized.encode("utf-8")) > CACHE_RESPONSE_MAX_BYTES:
+            raise MGMWeatherError(
+                f"Cache yanıtı {CACHE_RESPONSE_MAX_BYTES} byte sınırını aşıyor."
+            )
+
     def _cache_set(self, key: str, payload: Any) -> None:
         if self.cache_ttl_seconds <= 0:
             return
+        self._cache_response_schema_dogrula(payload)
         expires_at = time.monotonic() + self._cache_omru()
         yazilma_zamani = time.time()
         with self._cache_lock:

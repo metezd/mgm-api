@@ -91,6 +91,39 @@ class TestMGMClientUnit(unittest.TestCase):
 
         self.assertEqual(fake_session.calls, 2)
 
+    def test_cache_key_kullanici_girdisini_normalize_eder(self):
+        client = MGMWeather()
+
+        anahtarlar = [
+            client._cache_key("merkezler", {"il": "İstanbul"}),
+            client._cache_key("merkezler", {"il": "istanbul"}),
+            client._cache_key("merkezler", {"il": "İSTANBUL"}),
+            client._cache_key("merkezler", {"il": "istanbul%20"}),
+        ]
+
+        self.assertEqual(len(set(anahtarlar)), 1)
+        self.assertLessEqual(len(anahtarlar[0]), 180)
+        self.assertNotIn("İstanbul", anahtarlar[0])
+        self.assertTrue(anahtarlar[0].startswith("mgm-api:v2:mgm:"))
+
+    def test_cache_key_source_bilgisiyle_ayrilir(self):
+        client = MGMWeather()
+
+        mgm_key = client._cache_key("sondurumlar", {"merkezid": 1})
+        open_meteo_key = client._cache_key("open-meteo-guncel", {"merkezid": 1})
+
+        self.assertNotEqual(mgm_key, open_meteo_key)
+        self.assertIn(":mgm:", mgm_key)
+        self.assertIn(":open-meteo:", open_meteo_key)
+
+    def test_cache_yazmadan_once_json_response_schema_dogrulanir(self):
+        client = MGMWeather(cache_ttl_seconds=60)
+
+        with self.assertRaises(MGMWeatherError):
+            client._cache_set("schema-key", {"deger": float("nan")})
+        with self.assertRaises(MGMWeatherError):
+            client._cache_set("schema-key", "kullanici verisi")
+
     def test_gun_dogumu_batimi_ayni_konum_icin_cache_lenir(self):
         payload = {
             "results": {
