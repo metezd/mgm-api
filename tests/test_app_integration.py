@@ -845,6 +845,53 @@ class TestWebhookSSRF(unittest.TestCase):
             self.assertFalse(app_module._alert_webhook_gonder(self._alert(), {}))
         self.assertTrue(response.closed)
 
+    def test_webhook_retry_gecici_hatada_backoff_ile_tekrarlar(self):
+        responses = [
+            _FakeWebhookResponse([b"hata"], status_code=503),
+            _FakeWebhookResponse([b"ok"], status_code=200),
+        ]
+        eski_retry = app_module.ALERT_WEBHOOK_RETRY_MAX
+        app_module.ALERT_WEBHOOK_RETRY_MAX = 2
+        try:
+            with patch.object(app_module, "_webhook_hedefini_dogrula", return_value=None), patch.object(
+                app_module.requests, "post", side_effect=responses
+            ) as post, patch.object(app_module.time, "sleep") as sleep:
+                self.assertTrue(app_module._alert_webhook_gonder(self._alert(), {"yagisli": True}))
+        finally:
+            app_module.ALERT_WEBHOOK_RETRY_MAX = eski_retry
+
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once_with(app_module.ALERT_WEBHOOK_RETRY_BACKOFF)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["headers"]["Idempotency-Key"],
+            post.call_args_list[1].kwargs["headers"]["Idempotency-Key"],
+        )
+
+    def test_webhook_imzasi_hmac_sha256_ve_idempotency_key_gonderir(self):
+        import hashlib
+        import hmac
+
+        response = _FakeWebhookResponse([b"ok"])
+        eski_secret = app_module.ALERT_WEBHOOK_SIGNING_SECRET
+        app_module.ALERT_WEBHOOK_SIGNING_SECRET = "test-secret"
+        try:
+            with patch.object(
+                app_module,
+                "_webhook_hedefini_dogrula",
+                return_value=None,
+            ), patch.object(app_module.requests, "post", return_value=response) as post:
+                self.assertTrue(app_module._alert_webhook_gonder(self._alert(), {"yagisli": True}))
+        finally:
+            app_module.ALERT_WEBHOOK_SIGNING_SECRET = eski_secret
+
+        headers = post.call_args.kwargs["headers"]
+        body = post.call_args.kwargs["data"]
+        mesaj = f"{headers['X-MGM-Alert-Timestamp']}.".encode() + body
+        beklenen = hmac.new(b"test-secret", mesaj, hashlib.sha256).hexdigest()
+        self.assertEqual(headers["X-MGM-Alert-Signature"], f"sha256={beklenen}")
+        self.assertEqual(headers["Idempotency-Key"], app_module._alert_event_id(self._alert(), {"yagisli": True}))
+        self.assertEqual(headers["X-MGM-Alert-Id"], "alert-id")
+
 
 if __name__ == "__main__":
     unittest.main()

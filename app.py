@@ -590,6 +590,11 @@ ALERT_OLAY_BAZLI_TURLER = {
 ALERT_MAX_KAYIT = int(os.getenv("APP_ALERT_MAX_KAYIT", "30"))
 ALERT_TTL_SANIYE = int(os.getenv("APP_ALERT_TTL_SANIYE", str(90 * 24 * 3600)))
 ALERT_WEBHOOK_TIMEOUT = float(os.getenv("APP_ALERT_WEBHOOK_TIMEOUT_SANIYE", "5"))
+ALERT_WEBHOOK_RETRY_MAX = max(1, int(os.getenv("APP_ALERT_WEBHOOK_RETRY_MAX", "3")))
+ALERT_WEBHOOK_RETRY_BACKOFF = max(
+    0.0, float(os.getenv("APP_ALERT_WEBHOOK_RETRY_BACKOFF_SANIYE", "0.5"))
+)
+ALERT_WEBHOOK_SIGNING_SECRET = os.getenv("APP_ALERT_WEBHOOK_SIGNING_SECRET", "")
 ALERT_WEBHOOK_MAX_RESPONSE_BYTES = int(
     os.getenv("APP_ALERT_WEBHOOK_MAX_RESPONSE_BYTES", str(1024 * 1024))
 )
@@ -674,6 +679,17 @@ def _alert_redis_liste_key(liste_id: str, prefix: str) -> str:
 
 def _iso_now() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _alert_event_id(alert: dict, olcum: dict) -> str:
+    canonical = json.dumps(
+        {"tur": alert["tur"], "olcum": olcum},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    return f"{alert['id']}:{digest}"
 
 
 def _alert_ekle(liste_id: str, govde: dict) -> dict:
@@ -870,40 +886,70 @@ def _alert_degerlendir(alert: dict) -> tuple[bool, dict]:
 
 
 def _alert_webhook_gonder(alert: dict, olcum: dict) -> bool:
+    event_id = _alert_event_id(alert, olcum)
+    timestamp = _iso_now()
     payload = {
         "event": alert["tur"],
+        "eventId": event_id,
         "alertId": alert["id"],
         "il": alert["il"],
         "ilce": alert.get("ilce"),
         "esik": alert.get("esik"),
         "olcum": olcum,
-        "tetiklenmeZamani": _iso_now(),
+        "tetiklenmeZamani": timestamp,
     }
-    resp = None
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": event_id,
+        "X-MGM-Alert-Id": alert["id"],
+        "X-MGM-Alert-Timestamp": timestamp,
+    }
+    if ALERT_WEBHOOK_SIGNING_SECRET:
+        signature = hmac.new(
+            ALERT_WEBHOOK_SIGNING_SECRET.encode("utf-8"),
+            f"{timestamp}.".encode() + body,
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-MGM-Alert-Signature"] = f"sha256={signature}"
+
     try:
         _webhook_hedefini_dogrula(alert["webhookUrl"])
-        resp = requests.post(
-            alert["webhookUrl"],
-            json=payload,
-            timeout=ALERT_WEBHOOK_TIMEOUT,
-            allow_redirects=False,
-            stream=True,
-        )
-        content_length = resp.headers.get("Content-Length")
-        if content_length is not None and int(content_length) > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
-            return False
-        response_size = 0
-        for chunk in resp.iter_content(chunk_size=8192):
-            response_size += len(chunk)
-            if response_size > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
+        for attempt in range(1, ALERT_WEBHOOK_RETRY_MAX + 1):
+            resp = None
+            try:
+                resp = requests.post(
+                    alert["webhookUrl"],
+                    data=body,
+                    headers=headers,
+                    timeout=ALERT_WEBHOOK_TIMEOUT,
+                    allow_redirects=False,
+                    stream=True,
+                )
+                content_length = resp.headers.get("Content-Length")
+                if content_length is not None and int(content_length) > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
+                    return False
+                response_size = 0
+                for chunk in resp.iter_content(chunk_size=8192):
+                    response_size += len(chunk)
+                    if response_size > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
+                        return False
+                if resp.status_code < 400:
+                    return True
+                retryable = resp.status_code in {408, 425, 429} or resp.status_code >= 500
+            except requests.RequestException as exc:
+                retryable = True
+                logger.warning("Webhook denemesi başarısız (%s, deneme %d): %s", alert["webhookUrl"], attempt, exc)
+            finally:
+                if resp is not None:
+                    resp.close()
+            if not retryable or attempt == ALERT_WEBHOOK_RETRY_MAX:
                 return False
-        return resp.status_code < 400
-    except (AlertHatasi, requests.RequestException, ValueError) as exc:
+            time.sleep(ALERT_WEBHOOK_RETRY_BACKOFF * (2 ** (attempt - 1)))
+    except (AlertHatasi, ValueError) as exc:
         logger.warning("Webhook gönderilemedi (%s): %s", alert["webhookUrl"], exc)
         return False
-    finally:
-        if resp is not None:
-            resp.close()
+    return False
 
 
 def _alert_kontrol_calistir() -> dict:

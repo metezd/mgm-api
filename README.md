@@ -136,6 +136,9 @@ Belirli hava durumu olayları gerçekleştiğinde (yağmur başlangıcı, ani s�
 * **Esnek Kurallar:** İster eşik bazlı (örn. rüzgar hızı 50km/s'yi geçerse sürekli bildir), ister olay bazlı (örn. yağmur başladığında veya durduğunda bir kez bildir) kurallar oluşturabilirsiniz.
 * **Üyeliksiz ve Pratik:** Favori sistemindeki gibi kendi belirlediğiniz `liste_id` ile çalışır. Her liste için 30 farklı bildirim kuralı ekleyebilirsiniz.
 * **Anında İletim:** Koşullar sağlandığında, belirlediğiniz URL adresine konum, ölçüm ve zaman bilgilerini içeren net bir JSON paketi postalanır.
+* **Retry:** Timeout, bağlantı hataları ve `408`, `425`, `429`, `5xx` yanıtları sınırlı exponential backoff ile yeniden denenir. `4xx` yanıtlar yeniden denenmez.
+* **Idempotency:** Her olay `eventId` ve `Idempotency-Key` taşır. Alıcı aynı anahtarı daha önce işlediyse olayı tekrar uygulamamalıdır.
+* **İmza:** `APP_ALERT_WEBHOOK_SIGNING_SECRET` tanımlıysa `X-MGM-Alert-Signature` HMAC-SHA256 olarak gönderilir. İmzalanan veri `timestamp + "." + raw_json_body` biçimindedir; zaman damgası `X-MGM-Alert-Timestamp` header'ındadır.
 
 ### Bildirimleri Tetikleme
 Sunucuyu yormamak adına uygulamanın içinde sürekli çalışan bir arka plan görevi yoktur. Bildirimleri kontrol edip göndermesi için sisteminizi dışarıdan düzenli olarak tetiklemeniz gerekir (Örn: Her 10 dakikada bir).
