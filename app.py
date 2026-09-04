@@ -149,27 +149,31 @@ Rate limiting:
 from __future__ import annotations
 
 import datetime as _dt
-import hashlib
-import hmac
 import ipaddress
 import json
 import logging
 import os
 import re
-import socket
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult
 
-import requests
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, ValidationError
 
+from api.alerts import (
+    AlertWebhookError,
+    event_id as alert_event_id,
+    parse_webhook_url,
+    resolve_safe_ips,
+    send_webhook,
+    validate_webhook_target,
+)
 from api.auth import ListeYetkiService
 from api.middleware import RateLimiter, route_limit_setting, validate_date_range, validate_json_body
 from api.models import (
@@ -543,54 +547,24 @@ class AlertHatasi(Exception):
 
 
 def _webhook_url_ayristir(webhook_url: str) -> SplitResult:
-    if len(webhook_url) > MAX_WEBHOOK_URL_LENGTH:
-        raise AlertHatasi(
-            f"'webhookUrl' en fazla {MAX_WEBHOOK_URL_LENGTH} karakter olabilir."
-        )
     try:
-        parsed = urlsplit(webhook_url)
-        port = parsed.port
-        hostname = parsed.hostname
-    except ValueError as exc:
-        raise AlertHatasi("'webhookUrl' geçerli bir HTTPS URL olmalıdır.") from exc
-    if parsed.scheme.lower() != "https" or not hostname:
-        raise AlertHatasi("'webhookUrl' yalnızca https URL olmalıdır.")
-    if parsed.username or parsed.password:
-        raise AlertHatasi("'webhookUrl' kullanıcı bilgisi içeremez.")
-    if port is not None and port not in ALERT_WEBHOOK_ALLOWED_PORTS:
-        raise AlertHatasi("'webhookUrl' yalnızca 443 portunu kullanabilir.")
-    return parsed
+        return parse_webhook_url(webhook_url, MAX_WEBHOOK_URL_LENGTH, ALERT_WEBHOOK_ALLOWED_PORTS)
+    except AlertWebhookError as exc:
+        raise AlertHatasi(str(exc)) from exc
 
 
 def _webhook_guvenli_ipleri_getir(hostname: str, port: int) -> list[str]:
     try:
-        adresler = socket.getaddrinfo(
-            hostname,
-            port,
-            family=socket.AF_UNSPEC,
-            type=socket.SOCK_STREAM,
-        )
-    except socket.gaierror as exc:
-        raise AlertHatasi("Webhook hostname'i çözümlenemedi.") from exc
-
-    try:
-        ip_ler = {ipaddress.ip_address(adres[4][0]) for adres in adresler}
-    except ValueError as exc:
-        raise AlertHatasi("Webhook hostname'i geçerli IP adreslerine çözümlenmedi.") from exc
-    if not ip_ler:
-        raise AlertHatasi("Webhook hostname'i için IP adresi bulunamadı.")
-    if any(
-        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
-        for ip in ip_ler
-    ):
-        raise AlertHatasi("Webhook hedefi özel, yerel veya ayrılmış bir IP adresine çözümleniyor.")
-    return [str(ip) for ip in ip_ler]
+        return resolve_safe_ips(hostname, port)
+    except AlertWebhookError as exc:
+        raise AlertHatasi(str(exc)) from exc
 
 
 def _webhook_hedefini_dogrula(webhook_url: str) -> SplitResult:
-    parsed = _webhook_url_ayristir(webhook_url)
-    _webhook_guvenli_ipleri_getir(parsed.hostname, parsed.port or 443)
-    return parsed
+    try:
+        return validate_webhook_target(webhook_url, MAX_WEBHOOK_URL_LENGTH, ALERT_WEBHOOK_ALLOWED_PORTS)
+    except AlertWebhookError as exc:
+        raise AlertHatasi(str(exc)) from exc
 
 
 def _alert_redis_all_key(prefix: str) -> str:
@@ -606,14 +580,7 @@ def _iso_now() -> str:
 
 
 def _alert_event_id(alert: dict, olcum: dict) -> str:
-    canonical = json.dumps(
-        {"tur": alert["tur"], "olcum": olcum},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
-    return f"{alert['id']}:{digest}"
+    return alert_event_id(alert, olcum)
 
 
 def _alert_ekle(liste_id: str, govde: dict) -> dict:
@@ -810,70 +777,19 @@ def _alert_degerlendir(alert: dict) -> tuple[bool, dict]:
 
 
 def _alert_webhook_gonder(alert: dict, olcum: dict) -> bool:
-    event_id = _alert_event_id(alert, olcum)
-    timestamp = _iso_now()
-    payload = WebhookPayloadModel(
-        event=alert["tur"],
-        eventId=event_id,
-        alertId=alert["id"],
-        il=alert["il"],
-        ilce=alert.get("ilce"),
-        esik=alert.get("esik"),
-        olcum=olcum,
-        tetiklenmeZamani=timestamp,
-    ).model_dump()
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Idempotency-Key": event_id,
-        "X-MGM-Alert-Id": alert["id"],
-        "X-MGM-Alert-Timestamp": timestamp,
-    }
-    if ALERT_WEBHOOK_SIGNING_SECRET:
-        signature = hmac.new(
-            ALERT_WEBHOOK_SIGNING_SECRET.encode("utf-8"),
-            f"{timestamp}.".encode() + body,
-            hashlib.sha256,
-        ).hexdigest()
-        headers["X-MGM-Alert-Signature"] = f"sha256={signature}"
-
-    try:
-        _webhook_hedefini_dogrula(alert["webhookUrl"])
-        for attempt in range(1, ALERT_WEBHOOK_RETRY_MAX + 1):
-            resp = None
-            try:
-                resp = requests.post(
-                    alert["webhookUrl"],
-                    data=body,
-                    headers=headers,
-                    timeout=ALERT_WEBHOOK_TIMEOUT,
-                    allow_redirects=False,
-                    stream=True,
-                )
-                content_length = resp.headers.get("Content-Length")
-                if content_length is not None and int(content_length) > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
-                    return False
-                response_size = 0
-                for chunk in resp.iter_content(chunk_size=8192):
-                    response_size += len(chunk)
-                    if response_size > ALERT_WEBHOOK_MAX_RESPONSE_BYTES:
-                        return False
-                if resp.status_code < 400:
-                    return True
-                retryable = resp.status_code in {408, 425, 429} or resp.status_code >= 500
-            except requests.RequestException as exc:
-                retryable = True
-                logger.warning("Webhook denemesi başarısız (%s, deneme %d): %s", alert["webhookUrl"], attempt, exc)
-            finally:
-                if resp is not None:
-                    resp.close()
-            if not retryable or attempt == ALERT_WEBHOOK_RETRY_MAX:
-                return False
-            time.sleep(ALERT_WEBHOOK_RETRY_BACKOFF * (2 ** (attempt - 1)))
-    except (AlertHatasi, ValueError) as exc:
-        logger.warning("Webhook gönderilemedi (%s): %s", alert["webhookUrl"], exc)
-        return False
-    return False
+    return send_webhook(
+        alert,
+        olcum,
+        WebhookPayloadModel,
+        MAX_WEBHOOK_URL_LENGTH,
+        ALERT_WEBHOOK_ALLOWED_PORTS,
+        ALERT_WEBHOOK_TIMEOUT,
+        ALERT_WEBHOOK_RETRY_MAX,
+        ALERT_WEBHOOK_RETRY_BACKOFF,
+        ALERT_WEBHOOK_SIGNING_SECRET,
+        ALERT_WEBHOOK_MAX_RESPONSE_BYTES,
+        target_validator=_webhook_hedefini_dogrula,
+    )
 
 
 def _alert_kontrol_calistir() -> dict:
