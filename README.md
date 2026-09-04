@@ -98,12 +98,13 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 | `GET` | `/sondurum/kar-kalinliklari` | Türkiye geneli anlık kar yüksekliği (cm). |
 | `GET` | `/sondurum/son-gozlemler` | İl merkezlerinde anlık ölçüm (sıcaklık, nem, yağış, rüzgar, basınç, hadise). |
 | `POST` | `/toplu` | Tek istekte çoklu konum sorgusu (`{"sorgular": ["istanbul", "bursa"]}`). Paralel çalışır. |
-| `POST/DELETE` | `/favoriler/<liste_id>` | Favori listesine konum ekleme veya silme. |
-| `GET` | `/favoriler/<liste_id>` | Listedeki tüm favoriler için hava durumunu `/toplu` mantığıyla tek istekte döner. |
-| `GET` | `/favoriler/<liste_id>/liste` | Hava durumunu çekmeden kayıtlı sorguları döner |
-| `POST` | `/alerts/<liste_id>` | Webhook bildirim kaydı ekler (`{"tur", "il", "webhookUrl", "esik", "yon"}`). Kimlik doğrulama yok, favoriler ile aynı `liste_id` modeli. |
-| `DELETE` | `/alerts/<liste_id>/<alert_id>` | Kayıtlı bildirim kuralını silme. |
-| `GET` | `/alerts/<liste_id>` | Kayıtlı tüm bildirim kurallarını listeleme. |
+| `POST` | `/favoriler` | Yeni public `liste_id`, `manage_token` ve `read_token` tokenlar yalnızca bu yanıtta düz metin döner. |
+| `POST/DELETE` | `/favoriler/<liste_id>` | `Authorization: Bearer <manage_token>` ile favori ekleme veya silme. |
+| `GET` | `/favoriler/<liste_id>` | `Authorization: Bearer <read_token>` ile listedeki tüm favoriler için hava durumunu `/toplu` mantığıyla tek istekte döner. |
+| `GET` | `/favoriler/<liste_id>/liste` | `Authorization: Bearer <read_token>` ile hava durumunu çekmeden kayıtlı sorguları döner. |
+| `POST` | `/alerts/<liste_id>` | `manage_token` ile webhook bildirim kaydı ekler (`{"tur", "il", "webhookUrl", "esik", "yon"}`). |
+| `DELETE` | `/alerts/<liste_id>/<alert_id>` | `manage_token` ile kayıtlı bildirim kuralını siler. |
+| `GET` | `/alerts/<liste_id>` | `read_token` ile kayıtlı tüm bildirim kurallarını listeler. |
 | `POST` | `/api/v1/alerts/check` | Kayıtlı tüm bildirimleri değerlendirir, tetiklenenlere webhook gönderir. `Authorization: Bearer <CRON_SECRET>` gerekir. |
 | `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet/Mapbox) için 81 ilin sıcaklık verili GeoJSON çıktısı |
 | `GET` | `/don-uyarisi/<il>` | Tarımsal don ve kırağı riski değerlendirmesi |

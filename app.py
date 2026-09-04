@@ -77,12 +77,12 @@ Uç noktalar:
            MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
            göstergedir.
 
+    POST /favoriler
+        -> Yeni public liste_id ile manage_token ve read_token üretir.
+
     POST /favoriler/<liste_id>
         -> {"sorgu": "kadikoy/istanbul"} gövdesiyle bir favori ekler.
-           <liste_id> istemcinin kendi seçtiği/ürettiği bir kimliktir
-           (hesap/kimlik doğrulama YOKTUR. liste_id'yi bilen herkes
-           listeyi okur/düzenler, tıpkı paylaşılmayan bir Pastebin
-           linki gibi ele alınmalıdır). Liste başına en fazla
+           Authorization: Bearer <manage_token> gerekir. Liste başına en fazla
            APP_FAVORI_MAX_KAYIT (varsayılan 30) kayıt.
 
     DELETE /favoriler/<liste_id>
@@ -90,12 +90,13 @@ Uç noktalar:
 
     GET /favoriler/<liste_id>
         -> Listedeki tüm sorgular için hava durumunu tek istekte döner
+           Authorization: Bearer <read_token> gerekir.
            (/toplu ile aynı akıllı çözümleyici + paralel yürütme,
            kısmi başarısızlığa toleranslı).
 
     GET /favoriler/<liste_id>/liste
         -> Hava durumu çekmeden, yalnızca kayıtlı sorguları döner
-           (hafif, liste yönetimi arayüzleri için).
+           (hafif, liste yönetimi arayüzleri için). read_token gerekir.
 
     Kalıcılık: REDIS_URL tanımlıysa favoriler Redis'te tutulur (yeniden
     başlatmalarda kalıcı, worker/instance'lar arası paylaşılır,
@@ -106,9 +107,8 @@ Uç noktalar:
     POST /alerts/<liste_id>
         -> {"tur": "weather.temp_threshold", "il": "İstanbul",
            "webhookUrl": "https://...", "esik": 38, "yon": "ustunde"}
-           gövdesiyle bir alert kaydı ekler. <liste_id> favoriler ile
-           aynı mantıkla istemcinin kendi seçtiği bir kimliktir, hesap
-           sistemi yok. Desteklenen "tur" değerleri:
+           gövdesiyle bir alert kaydı ekler. manage_token gerekir.
+           Desteklenen "tur" değerleri:
            weather.temp_threshold, weather.wind_gust_exceeded,
            weather.rain_threshold (eşik bazlı, koşul doğru olduğu her
            kontrolde tetiklenir), weather.rain_started,
@@ -119,10 +119,10 @@ Uç noktalar:
            kayıt.
 
     DELETE /alerts/<liste_id>/<alert_id>
-        -> Bir alert kaydını siler.
+        -> Bir alert kaydını siler. manage_token gerekir.
 
     GET /alerts/<liste_id>
-        -> Listedeki tüm alert kayıtlarını döner.
+        -> Listedeki tüm alert kayıtlarını döner. read_token gerekir.
 
     POST /api/v1/alerts/check
         -> Authorization: Bearer <CRON_SECRET> header'ıyla korunur.
@@ -149,12 +149,15 @@ Rate limiting:
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
 import os
 import random
 import re
+import secrets
 import socket
 import threading
 import time
@@ -335,6 +338,8 @@ FAVORI_SORGU_MAX_UZUNLUK = 100
 
 _FAVORI_BELLEK: dict[str, dict[str, dict]] = defaultdict(dict)
 _FAVORI_BELLEK_KILIT = threading.Lock()
+_LISTE_YETKI_BELLEK: dict[str, dict[str, str]] = {}
+_LISTE_YETKI_BELLEK_KILIT = threading.Lock()
 
 
 class FavoriHatasi(Exception):
@@ -358,6 +363,76 @@ def _liste_id_dogrula(liste_id: str):
             "hata": "liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).",
         }
     ), 400
+
+
+def _liste_yetki_redis_key(liste_id: str, prefix: str) -> str:
+    return f"{prefix}liste-yetki:{liste_id}"
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _liste_yetki_olustur(liste_id: str | None = None) -> dict[str, str]:
+    liste_id = liste_id or secrets.token_urlsafe(18)
+    if not _favori_liste_id_gecerli(liste_id):
+        raise FavoriHatasi("liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).")
+    manage_token = secrets.token_urlsafe(32)
+    read_token = secrets.token_urlsafe(32)
+    yetkiler = {
+        "manage_token_hash": _token_hash(manage_token),
+        "read_token_hash": _token_hash(read_token),
+    }
+
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    if redis_musait:
+        try:
+            key = _liste_yetki_redis_key(liste_id, redis_prefix)
+            if redis_client.exists(key):
+                raise FavoriHatasi("Bu liste_id zaten kullanılıyor.")
+            redis_client.hset(key, mapping=yetkiler)
+            redis_client.expire(key, max(FAVORI_TTL_SANIYE, ALERT_TTL_SANIYE))
+        except redis_hata_sinifi:
+            logger.warning("Liste yetkileri Redis'e yazılamadı, bellek içi depolamaya düşülüyor.")
+        else:
+            return {"listeId": liste_id, "manage_token": manage_token, "read_token": read_token}
+
+    with _LISTE_YETKI_BELLEK_KILIT:
+        if liste_id in _LISTE_YETKI_BELLEK:
+            raise FavoriHatasi("Bu liste_id zaten kullanılıyor.")
+        _LISTE_YETKI_BELLEK[liste_id] = yetkiler
+    return {"listeId": liste_id, "manage_token": manage_token, "read_token": read_token}
+
+
+def _liste_yetki_dogrula(liste_id: str, gereken: str):
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return jsonify({"basarili": False, "hata": "Authorization Bearer token zorunludur."}), 401
+    token = auth[7:].strip()
+    if not token:
+        return jsonify({"basarili": False, "hata": "Authorization Bearer token zorunludur."}), 401
+
+    redis_musait, redis_client, redis_prefix, redis_hata_sinifi = _mgm_redis_durumu()
+    yetkiler = None
+    if redis_musait:
+        try:
+            ham = redis_client.hgetall(_liste_yetki_redis_key(liste_id, redis_prefix))
+            yetkiler = {
+                (key.decode() if isinstance(key, bytes) else key):
+                (value.decode() if isinstance(value, bytes) else value)
+                for key, value in ham.items()
+            }
+        except redis_hata_sinifi:
+            logger.warning("Liste yetkileri Redis'ten okunamadı, bellek içi depolamaya düşülüyor.")
+
+    if yetkiler is None:
+        with _LISTE_YETKI_BELLEK_KILIT:
+            yetkiler = dict(_LISTE_YETKI_BELLEK.get(liste_id, {}))
+
+    beklenen = yetkiler.get(f"{gereken}_token_hash")
+    if not beklenen or not hmac.compare_digest(beklenen, _token_hash(token)):
+        return jsonify({"basarili": False, "hata": "Yetkisiz."}), 401
+    return None
 
 
 def _json_govde_dogrula():
@@ -1105,10 +1180,39 @@ def toplu():
     return jsonify({"basarili": True, "veri": sonuclar})
 
 
+@app.post("/favoriler")
+def favori_liste_olustur():
+    body = request.get_json(silent=True) if request.is_json else {}
+    if body is None or not isinstance(body, dict):
+        return jsonify({"basarili": False, "hata": "Geçerli bir JSON nesnesi gönderin."}), 400
+    if "sorgu" in body:
+        liste_id = body.get("listeId")
+        if not isinstance(liste_id, str):
+            return jsonify({"basarili": False, "hata": "'listeId' alanı zorunludur."}), 400
+        if hata := _liste_id_dogrula(liste_id):
+            return hata
+        if hata := _liste_yetki_dogrula(liste_id, "manage"):
+            return hata
+        if not isinstance(body.get("sorgu"), str):
+            return jsonify({"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}), 400
+        try:
+            kayit = _favori_ekle(liste_id, body["sorgu"])
+        except FavoriHatasi as exc:
+            return jsonify({"basarili": False, "hata": str(exc)}), 400
+        return jsonify({"basarili": True, "veri": kayit})
+    try:
+        yetkiler = _liste_yetki_olustur(body.get("listeId"))
+    except FavoriHatasi as exc:
+        return jsonify({"basarili": False, "hata": str(exc)}), 400
+    return jsonify({"basarili": True, "veri": yetkiler}), 201
+
+
 @app.post("/favoriler/<liste_id>")
 def favori_ekle(liste_id: str):
     """Bir favoriye sorgu ekler/günceller, bkz. modül docstring'i."""
     if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
     if hata := _json_govde_dogrula():
         return hata
@@ -1128,6 +1232,8 @@ def favori_ekle(liste_id: str):
 def favori_sil(liste_id: str):
     """Bir favoriden sorgu siler, bkz. modül docstring'i."""
     if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
     if hata := _json_govde_dogrula():
         return hata
@@ -1149,6 +1255,8 @@ def favori_liste_goster(liste_id: str):
     """Hava durumu çekmeden yalnızca kayıtlı sorguları döner (hafif)."""
     if hata := _liste_id_dogrula(liste_id):
         return hata
+    if hata := _liste_yetki_dogrula(liste_id, "read"):
+        return hata
     return jsonify({"basarili": True, "veri": _favori_listele(liste_id)})
 
 
@@ -1160,6 +1268,8 @@ def favori_hava_durumu(liste_id: str):
     toleranslı).
     """
     if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _liste_yetki_dogrula(liste_id, "read"):
         return hata
     kayitlar = _favori_listele(liste_id)
     if not kayitlar:
@@ -1176,6 +1286,8 @@ def favori_hava_durumu(liste_id: str):
 def alert_ekle(liste_id: str):
     """Bir alert kaydı ekler, bkz. modül docstring'i."""
     if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
     if hata := _json_govde_dogrula():
         return hata
@@ -1194,6 +1306,8 @@ def alert_sil(liste_id: str, alert_id: str):
     """Bir alert kaydını siler."""
     if hata := _liste_id_dogrula(liste_id):
         return hata
+    if hata := _liste_yetki_dogrula(liste_id, "manage"):
+        return hata
     silindi = _alert_sil(liste_id, alert_id)
     if not silindi:
         return jsonify({"basarili": False, "hata": "Bu alert bulunamadı."}), 404
@@ -1204,6 +1318,8 @@ def alert_sil(liste_id: str, alert_id: str):
 def alert_liste_goster(liste_id: str):
     """Listedeki tüm alert kayıtlarını döner."""
     if hata := _liste_id_dogrula(liste_id):
+        return hata
+    if hata := _liste_yetki_dogrula(liste_id, "read"):
         return hata
     return jsonify({"basarili": True, "veri": _alert_listele(liste_id)})
 

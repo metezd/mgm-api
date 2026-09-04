@@ -449,6 +449,123 @@ class TestAppIntegration(unittest.TestCase):
         app_module.RATE_LIMIT_BUCKETS.clear()
 
 
+class TestListeYetkilendirme(unittest.TestCase):
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        with app_module._LISTE_YETKI_BELLEK_KILIT:
+            app_module._LISTE_YETKI_BELLEK.clear()
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK.clear()
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+
+    def tearDown(self):
+        with app_module._LISTE_YETKI_BELLEK_KILIT:
+            app_module._LISTE_YETKI_BELLEK.clear()
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK.clear()
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+
+    def _liste_olustur(self):
+        response = self.client.post("/favoriler", json={"listeId": "yetkili-liste"})
+        self.assertEqual(response.status_code, 201)
+        return response.get_json()["veri"]
+
+    def test_liste_olusturma_manage_ve_read_token_doner_hash_saklar(self):
+        data = self._liste_olustur()
+
+        self.assertEqual(data["listeId"], "yetkili-liste")
+        self.assertTrue(data["manage_token"])
+        self.assertTrue(data["read_token"])
+        self.assertNotEqual(data["manage_token"], data["read_token"])
+        hashes = app_module._LISTE_YETKI_BELLEK["yetkili-liste"]
+        self.assertNotIn(data["manage_token"], hashes.values())
+        self.assertEqual(hashes["manage_token_hash"], app_module._token_hash(data["manage_token"]))
+        self.assertEqual(hashes["read_token_hash"], app_module._token_hash(data["read_token"]))
+
+    def test_favori_okuma_read_token_ile_yazma_manage_token_ile_yapilir(self):
+        data = self._liste_olustur()
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+
+        self.assertEqual(
+            self.client.post(
+                "/favoriler/yetkili-liste",
+                json={"sorgu": "istanbul"},
+                headers=read_headers,
+            ).status_code,
+            401,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/favoriler/yetkili-liste",
+                json={"sorgu": "istanbul"},
+                headers=manage_headers,
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get("/favoriler/yetkili-liste/liste", headers=read_headers).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get("/favoriler/yetkili-liste/liste", headers=manage_headers).status_code,
+            401,
+        )
+
+    def test_post_favoriler_manage_token_ile_liste_id_uzerinden_ekler(self):
+        data = self._liste_olustur()
+        response = self.client.post(
+            "/favoriler",
+            json={"listeId": data["listeId"], "sorgu": "istanbul"},
+            headers={"Authorization": f"Bearer {data['manage_token']}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["veri"]["sorgu"], "istanbul")
+
+    def test_favori_ve_alert_rotalari_token_olmadan_401_doner(self):
+        self._liste_olustur()
+        self.assertEqual(
+            self.client.post("/favoriler/yetkili-liste", json={"sorgu": "istanbul"}).status_code,
+            401,
+        )
+        self.assertEqual(self.client.get("/favoriler/yetkili-liste/liste").status_code, 401)
+        self.assertEqual(self.client.get("/alerts/yetkili-liste").status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                "/alerts/yetkili-liste",
+                json={
+                    "tur": "weather.rain_started",
+                    "il": "İstanbul",
+                    "webhookUrl": "https://example.test/webhook",
+                },
+            ).status_code,
+            401,
+        )
+
+    def test_alert_okuma_read_token_yazma_manage_token_ile_yapilir(self):
+        data = self._liste_olustur()
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        body = {
+            "tur": "weather.rain_started",
+            "il": "İstanbul",
+            "webhookUrl": "https://example.test/webhook",
+        }
+
+        self.assertEqual(
+            self.client.post("/alerts/yetkili-liste", json=body, headers=read_headers).status_code,
+            401,
+        )
+        response = self.client.post("/alerts/yetkili-liste", json=body, headers=manage_headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/alerts/yetkili-liste", headers=read_headers).status_code, 200)
+
+
 class TestAlertTransitions(unittest.TestCase):
     def setUp(self):
         with app_module._ALERT_BELLEK_KILIT:
@@ -569,16 +686,15 @@ class TestWebhookSSRF(unittest.TestCase):
 
     def test_webhook_kaydi_sadece_https_ve_izinli_portu_kabul_eder(self):
         for url in ("http://webhook.example", "https://webhook.example:8443"):
-            with self.subTest(url=url):
-                with self.assertRaises(app_module.AlertHatasi):
-                    app_module._alert_ekle(
-                        "test-listesi",
-                        {
-                            "tur": "weather.rain_started",
-                            "il": "İstanbul",
-                            "webhookUrl": url,
-                        },
-                    )
+            with self.subTest(url=url), self.assertRaises(app_module.AlertHatasi):
+                app_module._alert_ekle(
+                    "test-listesi",
+                    {
+                        "tur": "weather.rain_started",
+                        "il": "İstanbul",
+                        "webhookUrl": url,
+                    },
+                )
 
     def test_webhook_ssrf_hedeflerini_reddeder(self):
         hedefler = (
@@ -599,18 +715,18 @@ class TestWebhookSSRF(unittest.TestCase):
                 app_module.socket,
                 "getaddrinfo",
                 return_value=[(app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", (hedef, 443))],
-            ):
-                with self.assertRaises(app_module.AlertHatasi):
-                    app_module._webhook_hedefini_dogrula(url)
+            ), self.assertRaises(app_module.AlertHatasi):
+                app_module._webhook_hedefini_dogrula(url)
 
     def test_webhook_dns_sonuclarinin_tumu_guvenli_olmali(self):
         adresler = [
             (app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
             (app_module.socket.AF_INET, app_module.socket.SOCK_STREAM, 6, "", ("10.0.0.8", 443)),
         ]
-        with patch.object(app_module.socket, "getaddrinfo", return_value=adresler):
-            with self.assertRaises(app_module.AlertHatasi):
-                app_module._webhook_hedefini_dogrula("https://webhook.example")
+        with patch.object(app_module.socket, "getaddrinfo", return_value=adresler), self.assertRaises(
+            app_module.AlertHatasi
+        ):
+            app_module._webhook_hedefini_dogrula("https://webhook.example")
 
     def test_webhook_istegi_redirectsiz_timeoutlu_ve_stream_olarak_gonderilir(self):
         response = _FakeWebhookResponse([b"ok"])
