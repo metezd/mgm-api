@@ -1,5 +1,6 @@
 import time
 import unittest
+from unittest.mock import patch
 
 import app as app_module
 from mgm_client import MGMWeatherError
@@ -11,12 +12,14 @@ class FakeMGM:
         should_fail_health: bool = False,
         redis_durum: dict[str, str] | None = None,
         circuit_breaker_durum: dict[str, str] | None = None,
+        alert_observations: list[dict | Exception] | None = None,
     ):
         self.should_fail_health = should_fail_health
         self.redis_durum = redis_durum if redis_durum is not None else {"durum": "skip"}
         self.circuit_breaker_durum = (
             circuit_breaker_durum if circuit_breaker_durum is not None else {"durum": "kapali"}
         )
+        self.alert_observations = list(alert_observations or [])
 
     def il_istasyonlari(self, il: str):
         if self.should_fail_health:
@@ -42,6 +45,14 @@ class FakeMGM:
 
     def saatlik_tahmin(self, istasyon_id: int | str):
         return [{"gun": "2026-08-14", "saat": "12:00", "sicaklik": 27.0}]
+
+    def guncel_durum_yedekli(self, istasyon_id: int | str, enlem: float | None, boylam: float | None):
+        if not self.alert_observations:
+            return {}
+        observation = self.alert_observations.pop(0)
+        if isinstance(observation, Exception):
+            raise observation
+        return observation
 
     def hava_durumu_akilli(self, sorgu: str):
         if sorgu == "bulunamayan sorgu":
@@ -436,6 +447,99 @@ class TestAppIntegration(unittest.TestCase):
 
         app_module.RATE_LIMIT_MAX = 60
         app_module.RATE_LIMIT_BUCKETS.clear()
+
+
+class TestAlertTransitions(unittest.TestCase):
+    def setUp(self):
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+
+    def tearDown(self):
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+
+    def _alert_olustur(self, tur: str, esik: float | None = None) -> dict:
+        govde = {
+            "tur": tur,
+            "il": "İstanbul",
+            "webhookUrl": "https://example.test/webhook",
+        }
+        if esik is not None:
+            govde["esik"] = esik
+        return app_module._alert_ekle("test-listesi", govde)
+
+    def _kontrol_et(self, observations: list[dict | Exception], alert: dict) -> list[dict]:
+        app_module.mgm = FakeMGM(alert_observations=observations)
+        with patch.object(app_module, "_alert_webhook_gonder", return_value=True) as webhook:
+            results = []
+            for _ in observations:
+                results.append(app_module._alert_kontrol_calistir())
+            alert["webhook_calls"] = webhook.call_count
+        return results
+
+    def test_yagis_yokken_yagis_baslayinca_bir_kez_tetiklenir(self):
+        alert = self._alert_olustur("weather.rain_started")
+        results = self._kontrol_et(
+            [{"durumKodu": "A"}, {"durumKodu": "Y"}], alert
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [0, 1])
+        self.assertEqual(alert["webhook_calls"], 1)
+        self.assertTrue(alert["sonDurum"]["yagisli"])
+
+    def test_yagis_devam_ederken_tekrar_tetiklenmez(self):
+        alert = self._alert_olustur("weather.rain_started")
+        results = self._kontrol_et(
+            [{"durumKodu": "Y"}, {"durumKodu": "Y"}], alert
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [0, 0])
+        self.assertEqual(alert["webhook_calls"], 0)
+
+    def test_yagis_varken_yagis_durunca_tetiklenir(self):
+        alert = self._alert_olustur("weather.rain_stopped")
+        results = self._kontrol_et(
+            [{"durumKodu": "Y"}, {"durumKodu": "A"}], alert
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [0, 1])
+        self.assertEqual(alert["webhook_calls"], 1)
+        self.assertFalse(alert["sonDurum"]["yagisli"])
+
+    def test_esik_altindan_esik_ustune_gecince_tetiklenir(self):
+        alert = self._alert_olustur("weather.rain_threshold", esik=5)
+        results = self._kontrol_et(
+            [{"yagis": 2}, {"yagis": 6}], alert
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [0, 1])
+        self.assertEqual(alert["webhook_calls"], 1)
+
+    def test_esik_ustu_kalmaya_devam_ederse_her_kontrolde_tetiklenir(self):
+        alert = self._alert_olustur("weather.rain_threshold", esik=5)
+        results = self._kontrol_et(
+            [{"yagis": 6}, {"yagis": 7}], alert
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [1, 1])
+        self.assertEqual(alert["webhook_calls"], 2)
+
+    def test_mgm_geri_gelince_bilinen_yagis_durumu_korunur(self):
+        alert = self._alert_olustur("weather.rain_started")
+        results = self._kontrol_et(
+            [
+                {"durumKodu": "A"},
+                MGMWeatherError("MGM verisi yok"),
+                {"durumKodu": "Y"},
+            ],
+            alert,
+        )
+
+        self.assertEqual([result["tetiklenen"] for result in results], [0, 0, 1])
+        self.assertEqual(alert["webhook_calls"], 1)
+        self.assertTrue(alert["sonDurum"]["yagisli"])
 
 
 if __name__ == "__main__":
