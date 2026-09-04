@@ -112,13 +112,19 @@ Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`
 
 Rate Limit
 -----------------------------------
-- Genel API: IP başına dakikada 60 istek.
-- Harita Verisi (/map/geojson): Sistem kaynağı tüketimi nedeniyle daha sıkı özel limitlere tabidir.
+- `GET /hava-durumu/<il>`: IP başına dakikada 60 istek.
+- `POST /toplu`: IP başına dakikada 10 istek; en fazla `APP_TOPLU_MAX_SORGU` lokasyon.
+- `GET /map/geojson`: IP başına dakikada 2 istek.
+- `GET /gecmis`: IP başına dakikada 10 istek; `start` ve `end` aralığı en fazla 31 gün.
+- `POST /alerts/<liste_id>`: IP başına dakikada 10 istek.
+- `POST /webhook/test`: IP başına dakikada 3 istek.
+- JSON body en fazla `APP_MAX_JSON_BODY_BYTES`, yanıt en fazla `APP_MAX_RESPONSE_BYTES` byte olabilir.
+- Webhook URL en fazla `APP_MAX_WEBHOOK_URL_LENGTH` karakter olabilir; liste başına alert sayısı `APP_ALERT_MAX_KAYIT` ile sınırlıdır.
 - Depolama: REDIS_URL varsa sayaçlar Redis'te tutulur, tüm instance'lar paylaşır.
 
 Favoriler
 ---------
-- Hızlı ve Şifresiz: Kendi belirleyeceğiniz (istemci tarafında üretilmiş) bir liste_id ile listelerinizi kolayca yönetin.
+- `liste_id` public/read identifier'dır; değişiklik için `manage_token`, okuma için `read_token` gerekir.
 - Limit: Liste başına en fazla 30 kayıt (APP_FAVORI_MAX_KAYIT).
 - Toplu okuma: `GET /favoriler/<liste_id>`, tüm sorgular için `/toplu` mantığıyla hava durumunu döner.
 

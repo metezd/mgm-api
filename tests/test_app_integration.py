@@ -448,6 +448,57 @@ class TestAppIntegration(unittest.TestCase):
         app_module.RATE_LIMIT_MAX = 60
         app_module.RATE_LIMIT_BUCKETS.clear()
 
+    def test_rate_limit_rota_kapsamlari_beklenen_degerlerdedir(self):
+        beklenen = {
+            ("GET", "/hava-durumu/Istanbul"): ("hava-durumu", 60),
+            ("POST", "/toplu"): ("toplu", 10),
+            ("GET", "/map/geojson"): ("map-geojson", 2),
+            ("GET", "/gecmis"): ("gecmis", 10),
+            ("GET", "/sondurum/toplam-yagis"): ("gecmis", 10),
+            ("POST", "/alerts/liste"): ("alerts", 10),
+            ("POST", "/webhook/test"): ("webhook-test", 3),
+        }
+        for (method, path), expected in beklenen.items():
+            with self.subTest(method=method, path=path):
+                self.assertEqual(app_module._rota_rate_limit_ayari(method, path), expected)
+
+    def test_json_govde_limiti_413_doner(self):
+        eski_limit = app_module.MAX_JSON_BODY_BYTES
+        eski_flask_limiti = app_module.app.config["MAX_CONTENT_LENGTH"]
+        app_module.MAX_JSON_BODY_BYTES = 10
+        app_module.app.config["MAX_CONTENT_LENGTH"] = 10
+        try:
+            response = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
+            self.assertEqual(response.status_code, 413)
+        finally:
+            app_module.MAX_JSON_BODY_BYTES = eski_limit
+            app_module.app.config["MAX_CONTENT_LENGTH"] = eski_flask_limiti
+
+    def test_response_boyutu_limiti_413_doner(self):
+        eski_limit = app_module.MAX_RESPONSE_BYTES
+        app_module.MAX_RESPONSE_BYTES = 10
+        try:
+            response = self.client.get("/iller")
+            self.assertEqual(response.status_code, 413)
+        finally:
+            app_module.MAX_RESPONSE_BYTES = eski_limit
+
+    def test_gecmis_tarih_araligi_31_gunu_asilamaz(self):
+        response = self.client.get("/gecmis?start=2026-01-01&end=2026-02-02")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("31", response.get_json()["hata"])
+
+    def test_webhook_url_uzunlugu_sinirlanir(self):
+        with self.assertRaises(app_module.AlertHatasi):
+            app_module._alert_ekle(
+                "test-listesi",
+                {
+                    "tur": "weather.rain_started",
+                    "il": "İstanbul",
+                    "webhookUrl": "https://example.test/" + "a" * app_module.MAX_WEBHOOK_URL_LENGTH,
+                },
+            )
+
 
 class TestListeYetkilendirme(unittest.TestCase):
     def setUp(self):

@@ -234,12 +234,24 @@ mgm = MGMWeather(
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
-# /map/geojson soğuk cache'te 81 il için paralel istek attığından
-# (bkz. mgm.harita_geojson) genel limitten ayrı ve daha sıkı bir limite tabidir
 MAP_GEOJSON_RATE_LIMIT_MAX = int(
-    os.getenv("APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS", "10")
+    os.getenv("APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS", "2")
 )
 TOPLU_MAX_SORGU = int(os.getenv("APP_TOPLU_MAX_SORGU", "20"))
+MAX_JSON_BODY_BYTES = int(os.getenv("APP_MAX_JSON_BODY_BYTES", str(64 * 1024)))
+MAX_RESPONSE_BYTES = int(os.getenv("APP_MAX_RESPONSE_BYTES", str(2 * 1024 * 1024)))
+MAX_DATE_RANGE_DAYS = int(os.getenv("APP_MAX_DATE_RANGE_DAYS", "31"))
+ROUTE_RATE_LIMITS = {
+    ("GET", "/hava-durumu"): ("hava-durumu", 60),
+    ("POST", "/toplu"): ("toplu", 10),
+    ("GET", "/toplu"): ("toplu", 10),
+    ("GET", "/map/geojson"): ("map-geojson", 2),
+    ("GET", "/gecmis"): ("gecmis", 10),
+    ("GET", "/sondurum"): ("gecmis", 10),
+    ("POST", "/alerts"): ("alerts", 10),
+    ("POST", "/webhook/test"): ("webhook-test", 3),
+}
+app.config["MAX_CONTENT_LENGTH"] = MAX_JSON_BODY_BYTES
 
 HTTP_ISTEK_SAYAC = Counter(
     "http_requests_total", "Toplam HTTP isteği", ["method", "endpoint", "status"]
@@ -256,6 +268,7 @@ CIRCUIT_BREAKER_DURUM_GAUGE = Gauge(
 
 
 RATE_LIMIT_BUCKETS: dict[str, deque] = defaultdict(deque)
+RATE_LIMIT_KILIT = threading.Lock()
 RATE_LIMIT_BUCKETS_MAX_IZLENEN = int(
     os.getenv("APP_RATE_LIMIT_MAX_TRACKED_IPS", "50000")
 )
@@ -309,22 +322,23 @@ def _rate_limit_kontrol(
             )
             # aşağıya düş
 
-    now = time.monotonic()
-    bucket_anahtari = f"{kapsam}:{ip}"
-    bucket = RATE_LIMIT_BUCKETS[bucket_anahtari]
-    while bucket and now - bucket[0] > window_seconds:
-        bucket.popleft()
+    with RATE_LIMIT_KILIT:
+        now = time.monotonic()
+        bucket_anahtari = f"{kapsam}:{ip}"
+        bucket = RATE_LIMIT_BUCKETS[bucket_anahtari]
+        while bucket and now - bucket[0] > window_seconds:
+            bucket.popleft()
 
-    kalan_sure = max(0.0, window_seconds - (now - bucket[0])) if bucket else 0.0
-    reset_epoch = int(time.time() + kalan_sure)
+        kalan_sure = max(0.0, window_seconds - (now - bucket[0])) if bucket else 0.0
+        reset_epoch = int(time.time() + kalan_sure)
 
-    if len(bucket) >= limit:
-        return False, 0, reset_epoch
+        if len(bucket) >= limit:
+            return False, 0, reset_epoch
 
-    bucket.append(now)
-    if random.random() < 0.01:  # ~her 100 istekte bir fırsatçı temizlik
-        _rate_limit_bellek_temizle()
-    return True, max(0, limit - len(bucket)), reset_epoch
+        bucket.append(now)
+        if random.random() < 0.01:
+            _rate_limit_bellek_temizle()
+        return True, max(0, limit - len(bucket)), reset_epoch
 
 
 # Hesap/kimlik doğrulama yok: liste_id istemcinin kendi seçtiği bir
@@ -566,6 +580,7 @@ ALERT_WEBHOOK_MAX_RESPONSE_BYTES = int(
     os.getenv("APP_ALERT_WEBHOOK_MAX_RESPONSE_BYTES", str(1024 * 1024))
 )
 ALERT_WEBHOOK_ALLOWED_PORTS = {443}
+MAX_WEBHOOK_URL_LENGTH = int(os.getenv("APP_MAX_WEBHOOK_URL_LENGTH", "2048"))
 ALERT_YAGISLI_HADISE_KODLARI = {
     "HY", "Y", "KY", "KKY", "HKY", "K", "KYK",
     "HSY", "SY", "KSY", "MSY", "DY", "GSY", "KGSY",
@@ -585,6 +600,10 @@ class AlertHatasi(Exception):
 
 
 def _webhook_url_ayristir(webhook_url: str) -> SplitResult:
+    if len(webhook_url) > MAX_WEBHOOK_URL_LENGTH:
+        raise AlertHatasi(
+            f"'webhookUrl' en fazla {MAX_WEBHOOK_URL_LENGTH} karakter olabilir."
+        )
     try:
         parsed = urlsplit(webhook_url)
         port = parsed.port
@@ -962,6 +981,51 @@ def istek_zamanlayici():
     g.metrik_baslangic = time.monotonic()
 
 
+def _rota_rate_limit_ayari(method: str, path: str) -> tuple[str, int] | None:
+    for (route_method, route_prefix), ayar in ROUTE_RATE_LIMITS.items():
+        if route_method == method and (path == route_prefix or path.startswith(f"{route_prefix}/")):
+            return ayar
+    return None
+
+
+def _tarih_araligi_dogrula():
+    if request.path != "/gecmis":
+        return None
+    start = request.args.get("start")
+    end = request.args.get("end")
+    if not start and not end:
+        return None
+    if not start or not end:
+        return jsonify({"basarili": False, "hata": "'start' ve 'end' birlikte gönderilmelidir."}), 400
+    try:
+        baslangic = _dt.date.fromisoformat(start)
+        bitis = _dt.date.fromisoformat(end)
+    except ValueError:
+        return jsonify({"basarili": False, "hata": "Tarihler YYYY-MM-DD biçiminde olmalıdır."}), 400
+    if bitis < baslangic:
+        return jsonify({"basarili": False, "hata": "'end', 'start' tarihinden önce olamaz."}), 400
+    if (bitis - baslangic).days > MAX_DATE_RANGE_DAYS:
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": f"Tarih aralığı en fazla {MAX_DATE_RANGE_DAYS} gün olabilir.",
+            }
+        ), 400
+    return None
+
+
+@app.before_request
+def istek_sinirlarini_kontrol_et():
+    if request.is_json and request.content_length is not None and request.content_length > MAX_JSON_BODY_BYTES:
+        return jsonify(
+            {
+                "basarili": False,
+                "hata": f"JSON gövdesi en fazla {MAX_JSON_BODY_BYTES} byte olabilir.",
+            }
+        ), 413
+    return _tarih_araligi_dogrula()
+
+
 @app.before_request
 def rate_limit():
     if request.method == "OPTIONS":
@@ -971,11 +1035,13 @@ def rate_limit():
 
     ip = request.remote_addr or "unknown"
     window_seconds = max(1, RATE_LIMIT_WINDOW)
-    if request.path == "/map/geojson":
-        limit = max(1, MAP_GEOJSON_RATE_LIMIT_MAX)
-        kapsam = "map-geojson"
+    rota_ayari = _rota_rate_limit_ayari(request.method, request.path)
+    if rota_ayari is not None:
+        kapsam, limit = rota_ayari
+        if kapsam == "map-geojson":
+            limit = MAP_GEOJSON_RATE_LIMIT_MAX
     else:
-        limit = max(1, RATE_LIMIT_MAX)
+        limit = RATE_LIMIT_MAX
         kapsam = "genel"
 
     izin_verildi, kalan, reset_epoch = _rate_limit_kontrol(
@@ -999,6 +1065,14 @@ def rate_limit():
 
 @app.after_request
 def guvenlik_ve_cors_headerlari(response):
+    if not response.direct_passthrough and len(response.get_data()) > MAX_RESPONSE_BYTES:
+        response = jsonify(
+            {
+                "basarili": False,
+                "hata": f"Yanıt gövdesi en fazla {MAX_RESPONSE_BYTES} byte olabilir.",
+            }
+        )
+        response.status_code = 413
     response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
