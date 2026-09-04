@@ -120,7 +120,8 @@ Rate Limit
 - `POST /webhook/test`: IP başına dakikada 3 istek.
 - JSON body en fazla `APP_MAX_JSON_BODY_BYTES`, yanıt en fazla `APP_MAX_RESPONSE_BYTES` byte olabilir.
 - Webhook URL en fazla `APP_MAX_WEBHOOK_URL_LENGTH` karakter olabilir; liste başına alert sayısı `APP_ALERT_MAX_KAYIT` ile sınırlıdır.
-- Depolama: REDIS_URL varsa sayaçlar Redis'te tutulur, tüm instance'lar paylaşır.
+- Depolama: REDIS_URL varsa sayaçlar Redis'te tutulur, tüm instance'lar paylaşır; Redis sayacı atomik Lua script ile artırılır.
+- Proxy arkasında çalışıyorsanız yalnızca kendi proxy ağlarınızı `APP_TRUSTED_PROXY_CIDRS` ile tanımlayın. Boş bırakılırsa `X-Forwarded-For` yok sayılır.
 
 Favoriler
 ---------

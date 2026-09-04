@@ -272,6 +272,18 @@ RATE_LIMIT_KILIT = threading.Lock()
 RATE_LIMIT_BUCKETS_MAX_IZLENEN = int(
     os.getenv("APP_RATE_LIMIT_MAX_TRACKED_IPS", "50000")
 )
+TRUSTED_PROXY_NETWORKS = tuple(
+        ipaddress.ip_network(value.strip())
+        for value in os.getenv("APP_TRUSTED_PROXY_CIDRS", "").split(",")
+        if value.strip()
+)
+RATE_LIMIT_REDIS_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
 
 
 def _mgm_redis_durumu():
@@ -309,10 +321,12 @@ def _rate_limit_kontrol(
         try:
             pencere = int(time.time() // window_seconds)
             redis_key = f"{redis_prefix}ratelimit:{kapsam}:{ip}:{pencere}"
-            pipe = redis_client.pipeline()
-            pipe.incr(redis_key)
-            pipe.expire(redis_key, window_seconds)
-            sayac, _ = pipe.execute()
+            sayac = redis_client.eval(
+                RATE_LIMIT_REDIS_SCRIPT,
+                1,
+                redis_key,
+                window_seconds,
+            )
             reset_epoch = (pencere + 1) * window_seconds
             kalan = max(0, limit - int(sayac))
             return int(sayac) <= limit, kalan, reset_epoch
@@ -981,6 +995,28 @@ def istek_zamanlayici():
     g.metrik_baslangic = time.monotonic()
 
 
+def _istemci_ip() -> str:
+    remote_addr = request.remote_addr or "unknown"
+    try:
+        remote_ip = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        return remote_addr
+    if not any(remote_ip in network for network in TRUSTED_PROXY_NETWORKS):
+        return remote_addr
+
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    adaylar = []
+    for aday in forwarded_for.split(","):
+        try:
+            adaylar.append(ipaddress.ip_address(aday.strip()))
+        except ValueError:
+            continue
+    for aday in reversed(adaylar):
+        if not any(aday in network for network in TRUSTED_PROXY_NETWORKS):
+            return str(aday)
+    return remote_addr
+
+
 def _rota_rate_limit_ayari(method: str, path: str) -> tuple[str, int] | None:
     for (route_method, route_prefix), ayar in ROUTE_RATE_LIMITS.items():
         if route_method == method and (path == route_prefix or path.startswith(f"{route_prefix}/")):
@@ -1033,7 +1069,7 @@ def rate_limit():
     if request.path in {"/health", "/docs", "/openapi.yaml", "/metrics"}:
         return None
 
-    ip = request.remote_addr or "unknown"
+    ip = _istemci_ip()
     window_seconds = max(1, RATE_LIMIT_WINDOW)
     rota_ayari = _rota_rate_limit_ayari(request.method, request.path)
     if rota_ayari is not None:

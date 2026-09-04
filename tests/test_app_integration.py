@@ -462,6 +462,32 @@ class TestAppIntegration(unittest.TestCase):
             with self.subTest(method=method, path=path):
                 self.assertEqual(app_module._rota_rate_limit_ayari(method, path), expected)
 
+    def test_guvenilmeyen_proxy_x_forwarded_for_basligini_yok_sayar(self):
+        eski_aglar = app_module.TRUSTED_PROXY_NETWORKS
+        app_module.TRUSTED_PROXY_NETWORKS = ()
+        try:
+            with app_module.app.test_request_context(
+                "/iller",
+                environ_base={"REMOTE_ADDR": "198.51.100.10"},
+                headers={"X-Forwarded-For": "203.0.113.10"},
+            ):
+                self.assertEqual(app_module._istemci_ip(), "198.51.100.10")
+        finally:
+            app_module.TRUSTED_PROXY_NETWORKS = eski_aglar
+
+    def test_guvenilen_proxy_x_forwarded_for_zincirinden_istemciyi_secer(self):
+        eski_aglar = app_module.TRUSTED_PROXY_NETWORKS
+        app_module.TRUSTED_PROXY_NETWORKS = (app_module.ipaddress.ip_network("10.0.0.0/8"),)
+        try:
+            with app_module.app.test_request_context(
+                "/iller",
+                environ_base={"REMOTE_ADDR": "10.0.0.2"},
+                headers={"X-Forwarded-For": "198.51.100.10, 10.0.0.3"},
+            ):
+                self.assertEqual(app_module._istemci_ip(), "198.51.100.10")
+        finally:
+            app_module.TRUSTED_PROXY_NETWORKS = eski_aglar
+
     def test_json_govde_limiti_413_doner(self):
         eski_limit = app_module.MAX_JSON_BODY_BYTES
         eski_flask_limiti = app_module.app.config["MAX_CONTENT_LENGTH"]
