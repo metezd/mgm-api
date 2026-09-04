@@ -291,6 +291,10 @@ class TestAppIntegration(unittest.TestCase):
         resp = self.client.post("/toplu", json={"sorgular": ["istanbul", "  "]})
         self.assertEqual(resp.status_code, 400)
 
+    def test_toplu_bilinmeyen_alan_400_doner(self):
+        resp = self.client.post("/toplu", json={"sorgular": ["istanbul"], "fazla": True})
+        self.assertEqual(resp.status_code, 400)
+
     def test_toplu_limit_asilirsa_400_doner(self):
         app_module.TOPLU_MAX_SORGU = 3
         try:
@@ -641,6 +645,20 @@ class TestListeYetkilendirme(unittest.TestCase):
         response = self.client.post("/alerts/yetkili-liste", json=body, headers=manage_headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get("/alerts/yetkili-liste", headers=read_headers).status_code, 200)
+
+    def test_alert_bilinmeyen_alan_400_doner(self):
+        data = self._liste_olustur()
+        response = self.client.post(
+            "/alerts/yetkili-liste",
+            json={
+                "tur": "weather.rain_started",
+                "il": "İstanbul",
+                "webhookUrl": "https://example.test/webhook",
+                "fazla": True,
+            },
+            headers={"Authorization": f"Bearer {data['manage_token']}"},
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 class TestAlertTransitions(unittest.TestCase):

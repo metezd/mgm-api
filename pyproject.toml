@@ -23,6 +23,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "pydantic>=2.7,<3",
     "requests>=2.31",
     "tzdata>=2024.1",
 ]

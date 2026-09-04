@@ -1,5 +1,6 @@
 flask>=3.0
 flask-compress>=1.15
+pydantic>=2.7,<3
 prometheus-client>=0.20
 pyyaml>=6.0
 redis>=5.0

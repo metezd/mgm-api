@@ -170,6 +170,7 @@ import requests
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 
@@ -609,6 +610,85 @@ ALERT_DON_SEVIYE_SIRASI = {
     "Hafif Don": 2, "Orta Don": 3, "Kuvvetli Don": 4, "Çok Kuvvetli Don": 5,
 }
 
+
+class FavoriGovdeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sorgu: str = Field(min_length=1, max_length=FAVORI_SORGU_MAX_UZUNLUK)
+
+
+class FavoriListeEkleModel(FavoriGovdeModel):
+    listeId: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class ListeOlusturModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    listeId: str | None = Field(default=None, min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class TopluGovdeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sorgular: list[str] = Field(min_length=1)
+
+    @field_validator("sorgular")
+    @classmethod
+    def sorgular_bos_olmamalı(cls, value: list[str]) -> list[str]:
+        if len(value) > TOPLU_MAX_SORGU:
+            raise ValueError(f"en fazla {TOPLU_MAX_SORGU} sorgu gönderilebilir")
+        if any(not sorgu.strip() for sorgu in value):
+            raise ValueError("listedeki her sorgu boş olmayan bir metin olmalıdır")
+        return value
+
+
+class AlertGovdeModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tur: str
+    il: str = Field(min_length=1, max_length=100)
+    ilce: str | None = Field(default=None, max_length=100)
+    webhookUrl: str = Field(min_length=1, max_length=MAX_WEBHOOK_URL_LENGTH)
+    esik: float | str | None = None
+    yon: str = "ustunde"
+
+    @field_validator("tur")
+    @classmethod
+    def tur_gecerli(cls, value: str) -> str:
+        if value not in ALERT_TURLERI:
+            raise ValueError("geçersiz alert türü")
+        return value
+
+    @field_validator("yon")
+    @classmethod
+    def yon_gecerli(cls, value: str) -> str:
+        if value not in {"ustunde", "altinda"}:
+            raise ValueError("'yon' ustunde veya altinda olmalıdır")
+        return value
+
+
+class WebhookPayloadModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event: str
+    eventId: str
+    alertId: str
+    il: str
+    ilce: str | None = None
+    esik: float | str | None = None
+    olcum: dict
+    tetiklenmeZamani: str
+
+
+def _pydantic_govde(model_class: type[BaseModel]):
+    if hata := _json_govde_dogrula():
+        return None, hata
+    try:
+        return model_class.model_validate(request.get_json(silent=True)), None
+    except ValidationError as exc:
+        detay = [{"loc": hata["loc"], "msg": hata["msg"], "type": hata["type"]} for hata in exc.errors()]
+        return None, (jsonify({"basarili": False, "hata": "Geçersiz istek gövdesi.", "detay": detay}), 400)
+
 _ALERT_BELLEK: dict[str, dict] = {}
 _ALERT_LISTE_INDEX: dict[str, set[str]] = defaultdict(set)
 _ALERT_BELLEK_KILIT = threading.Lock()
@@ -888,16 +968,16 @@ def _alert_degerlendir(alert: dict) -> tuple[bool, dict]:
 def _alert_webhook_gonder(alert: dict, olcum: dict) -> bool:
     event_id = _alert_event_id(alert, olcum)
     timestamp = _iso_now()
-    payload = {
-        "event": alert["tur"],
-        "eventId": event_id,
-        "alertId": alert["id"],
-        "il": alert["il"],
-        "ilce": alert.get("ilce"),
-        "esik": alert.get("esik"),
-        "olcum": olcum,
-        "tetiklenmeZamani": timestamp,
-    }
+    payload = WebhookPayloadModel(
+        event=alert["tur"],
+        eventId=event_id,
+        alertId=alert["id"],
+        il=alert["il"],
+        ilce=alert.get("ilce"),
+        esik=alert.get("esik"),
+        olcum=olcum,
+        tetiklenmeZamani=timestamp,
+    ).model_dump()
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -1299,33 +1379,10 @@ def toplu():
     isteğe çok sayıda sorgu sıkıştırmak, rate limit'i fiilen bypass
     etmenin bir yolu olurdu
     """
-    if not request.is_json:
-        return jsonify(
-            {"basarili": False, "hata": "İstek gövdesi JSON olmalıdır (Content-Type: application/json)."}
-        ), 400
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict) or "sorgular" not in body:
-        return jsonify(
-            {"basarili": False, "hata": "'sorgular' alanı zorunludur (bir dizi metin sorgusu)."}
-        ), 400
-
-    sorgular = body["sorgular"]
-    if not isinstance(sorgular, list) or not sorgular:
-        return jsonify(
-            {"basarili": False, "hata": "'sorgular' boş olmayan bir dizi olmalıdır."}
-        ), 400
-    if len(sorgular) > TOPLU_MAX_SORGU:
-        return jsonify(
-            {
-                "basarili": False,
-                "hata": f"En fazla {TOPLU_MAX_SORGU} sorgu gönderebilirsiniz "
-                f"(gönderilen: {len(sorgular)}).",
-            }
-        ), 400
-    if not all(isinstance(s, str) and s.strip() for s in sorgular):
-        return jsonify(
-            {"basarili": False, "hata": "'sorgular' listesindeki her öğe boş olmayan bir metin olmalıdır."}
-        ), 400
+    model, hata = _pydantic_govde(TopluGovdeModel)
+    if hata:
+        return hata
+    sorgular = model.sorgular
 
     # MGMWeather client thread safe yapıdadır
     # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi,
@@ -1339,25 +1396,25 @@ def toplu():
 @app.post("/favoriler")
 def favori_liste_olustur():
     body = request.get_json(silent=True) if request.is_json else {}
-    if body is None or not isinstance(body, dict):
-        return jsonify({"basarili": False, "hata": "Geçerli bir JSON nesnesi gönderin."}), 400
-    if "sorgu" in body:
-        liste_id = body.get("listeId")
-        if not isinstance(liste_id, str):
-            return jsonify({"basarili": False, "hata": "'listeId' alanı zorunludur."}), 400
+    if isinstance(body, dict) and "sorgu" in body:
+        model, hata = _pydantic_govde(FavoriListeEkleModel)
+        if hata:
+            return hata
+        liste_id = model.listeId
         if hata := _liste_id_dogrula(liste_id):
             return hata
         if hata := _liste_yetki_dogrula(liste_id, "manage"):
             return hata
-        if not isinstance(body.get("sorgu"), str):
-            return jsonify({"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}), 400
         try:
-            kayit = _favori_ekle(liste_id, body["sorgu"])
+            kayit = _favori_ekle(liste_id, model.sorgu)
         except FavoriHatasi as exc:
             return jsonify({"basarili": False, "hata": str(exc)}), 400
         return jsonify({"basarili": True, "veri": kayit})
+    model, hata = _pydantic_govde(ListeOlusturModel)
+    if hata:
+        return hata
     try:
-        yetkiler = _liste_yetki_olustur(body.get("listeId"))
+        yetkiler = _liste_yetki_olustur(model.listeId)
     except FavoriHatasi as exc:
         return jsonify({"basarili": False, "hata": str(exc)}), 400
     return jsonify({"basarili": True, "veri": yetkiler}), 201
@@ -1370,15 +1427,11 @@ def favori_ekle(liste_id: str):
         return hata
     if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
-    if hata := _json_govde_dogrula():
+    model, hata = _pydantic_govde(FavoriGovdeModel)
+    if hata:
         return hata
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
-        return jsonify(
-            {"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}
-        ), 400
     try:
-        kayit = _favori_ekle(liste_id, body["sorgu"])
+        kayit = _favori_ekle(liste_id, model.sorgu)
     except FavoriHatasi as exc:
         return jsonify({"basarili": False, "hata": str(exc)}), 400
     return jsonify({"basarili": True, "veri": kayit})
@@ -1391,14 +1444,10 @@ def favori_sil(liste_id: str):
         return hata
     if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
-    if hata := _json_govde_dogrula():
+    model, hata = _pydantic_govde(FavoriGovdeModel)
+    if hata:
         return hata
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict) or not isinstance(body.get("sorgu"), str):
-        return jsonify(
-            {"basarili": False, "hata": "'sorgu' alanı zorunludur (bir metin)."}
-        ), 400
-    silindi = _favori_sil(liste_id, body["sorgu"])
+    silindi = _favori_sil(liste_id, model.sorgu)
     if not silindi:
         return jsonify(
             {"basarili": False, "hata": "Bu sorgu listede bulunamadı."}
@@ -1445,13 +1494,11 @@ def alert_ekle(liste_id: str):
         return hata
     if hata := _liste_yetki_dogrula(liste_id, "manage"):
         return hata
-    if hata := _json_govde_dogrula():
+    model, hata = _pydantic_govde(AlertGovdeModel)
+    if hata:
         return hata
-    govde = request.get_json(silent=True)
-    if not isinstance(govde, dict):
-        return jsonify({"basarili": False, "hata": "Geçerli bir JSON nesnesi gönderin."}), 400
     try:
-        kayit = _alert_ekle(liste_id, govde)
+        kayit = _alert_ekle(liste_id, model.model_dump(exclude_none=True))
     except AlertHatasi as exc:
         return jsonify({"basarili": False, "hata": str(exc)}), 400
     return jsonify({"basarili": True, "veri": kayit})
