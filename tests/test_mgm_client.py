@@ -1298,5 +1298,141 @@ class TestPrometheusMetrikleri(unittest.TestCase):
         self.assertEqual(self._sayac("stale_hit"), stale_once + 1)
 
 
+class _SondurumSession:
+    """Yol bazlı (path -> yanıt) çok basit sahte oturum. sondurumlar/*,
+    merkezler/iller gibi tek-endpoint testleri için."""
+
+    def __init__(self, path_yanitlari: dict[str, object]):
+        self.path_yanitlari = path_yanitlari
+        self.calls: list[tuple] = []
+
+    def get(self, url, params=None, **kwargs):
+        self.calls.append((url, dict(params or {})))
+        for path, yanit in self.path_yanitlari.items():
+            if path in url:
+                return _DummyResponse(yanit)
+        raise AssertionError(f"Beklenmeyen URL: {url}")
+
+
+class TestSonDurumlarAilesi(unittest.TestCase):
+    """en_dusuk/en_yuksek_sicakliklar, toplam_yagislar, kar_kalinliklari,
+    son_gozlemler. Bu ailede canlı testte gerçek bir hata bulunmuştu
+    (kar_kalinliklari'ye yanlışlıkla istAd filtresi kopyalanmıştı,
+    kaynak JS'te böyle bir filtre yoktu, tüm kayıtlar sessizce
+    siliniyordu) - bu sınıf o regresyonu bir daha yakalar."""
+
+    def test_en_dusuk_sicakliklar_dogru_tarih_servisini_kullanir(self):
+        session = _SondurumSession({
+            "minimumMaxTarih": ["2026-01-10T18:00:00"],
+            "sondurumlar/endusuk": [{"il": "Ardahan", "istAd": "ARDAHAN", "deger": -5.2}],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.en_dusuk_sicakliklar()
+        self.assertEqual(sonuc["tarih"], "2026-01-10")
+        self.assertEqual(len(sonuc["kayitlar"]), 1)
+        # minimumMaxTarih çağrıldı, maximumMaxTarih çağrılmadı
+        self.assertTrue(any("minimumMaxTarih" in u for u, _ in session.calls))
+        self.assertFalse(any("maximumMaxTarih" in u for u, _ in session.calls))
+
+    def test_en_yuksek_sicakliklar_ayri_tarih_servisini_kullanir(self):
+        # Regresyon: en_yuksek yanlışlıkla minimumMaxTarih kullanıyordu,
+        # bu da maximumMaxTarih'in verdiği farklı tarihi görmezden geliyordu
+        session = _SondurumSession({
+            "maximumMaxTarih": ["2026-01-09T18:00:00"],
+            "sondurumlar/enyuksek": [{"il": "Şırnak", "istAd": "SIRNAK", "deger": 41.0}],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.en_yuksek_sicakliklar()
+        self.assertEqual(sonuc["tarih"], "2026-01-09")
+        self.assertEqual(len(sonuc["kayitlar"]), 1)
+        self.assertTrue(any("maximumMaxTarih" in u for u, _ in session.calls))
+        self.assertFalse(any("minimumMaxTarih" in u for u, _ in session.calls))
+
+    def test_toplam_yagislar_yagis_max_tarih_servisini_kullanir(self):
+        session = _SondurumSession({
+            "yagisMaxTarih": ["2026-08-28T06:00:00"],
+            "sondurumlar/toplamyagis": [{"il": "Rize", "istAd": "RIZE", "deger": 45.2}],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.toplam_yagislar()
+        self.assertEqual(sonuc["tarih"], "2026-08-28")
+        self.assertEqual(len(sonuc["kayitlar"]), 1)
+
+    def test_en_dusuk_sicakliklar_istadi_olmayan_kayitlari_filtreler(self):
+        session = _SondurumSession({
+            "minimumMaxTarih": ["2026-01-10T18:00:00"],
+            "sondurumlar/endusuk": [
+                {"il": "Ardahan", "istAd": "ARDAHAN", "deger": -5.2},
+                {"il": None, "istAd": None, "deger": None},
+            ],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.en_dusuk_sicakliklar()
+        self.assertEqual(len(sonuc["kayitlar"]), 1)
+
+    def test_kar_kalinliklari_istad_filtresi_UYGULAMAZ(self):
+        # Regresyon testi: kaynak karkalinlik.js'te istAd filtresi YOK
+        # (yalnızca görüntüde ng-show var, veri dizisi filtrelenmiyor).
+        # Önceki bir sürüm yanlışlıkla bu filtreyi eklemişti ve
+        # sondurumlar/kar'ın alan adı farklıysa TÜM kayıtları sessizce
+        # siliyordu. Bu test, istAd alanı olmayan kayıtların da
+        # kaybolmadığını doğrular.
+        session = _SondurumSession({
+            "sondurumlar/kar": [
+                {"il": "Erzurum", "istAd": "PALANDÖKEN", "karYukseklik": 35},
+                {"il": "Bursa", "istAd": None, "karYukseklik": 12},  # istAd yok, yine de kalmalı
+            ],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.kar_kalinliklari()
+        self.assertEqual(len(sonuc["kayitlar"]), 2)  # HİÇBİRİ filtrelenmemeli
+
+    def test_kar_kalinliklari_tarih_parametresi_gondermez(self):
+        session = _SondurumSession({"sondurumlar/kar": []})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        client.kar_kalinliklari()
+        self.assertEqual(len(session.calls), 1)  # tek çağrı, tarih servisi yok
+        _, params = session.calls[0]
+        self.assertNotIn("tarih", params)
+
+    def test_son_gozlemler_il_adini_dogru_esler(self):
+        session = _SondurumSession({
+            "merkezler/iller": [{"sondurumIstNo": 17130, "ilPlaka": 34}],
+            "sondurumlar/ilmerkezleri": [{"istNo": 17130, "sicaklik": 24.5}],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.son_gozlemler()
+        self.assertEqual(sonuc["kayitlar"][0]["il"], "İstanbul")
+        self.assertNotIn("_uyari", sonuc)
+
+    def test_son_gozlemler_eslesme_basarisizsa_uyari_ekler(self):
+        # merkezler/iller'in alan adları beklenenden farklıysa (MGM
+        # değiştirdiyse) sessizce "il": null yazıp geçmemeli
+        session = _SondurumSession({
+            "merkezler/iller": [{"bilinmeyenAlan": 17130}],
+            "sondurumlar/ilmerkezleri": [{"istNo": 17130, "sicaklik": 24.5}],
+        })
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.son_gozlemler()
+        self.assertIsNone(sonuc["kayitlar"][0]["il"])
+        self.assertIn("_uyari", sonuc)
+
+
 if __name__ == "__main__":
     unittest.main()

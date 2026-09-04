@@ -1437,8 +1437,7 @@ class MGMWeather:
             lambda: self._get("sondurumlar/kar"),
             ttl_override=self.sondurum_ttl_saniye,
         )
-        kayitlar = [k for k in veri if k.get("istAd") is not None]
-        return {"kayitlar": kayitlar}
+        return {"kayitlar": veri}
 
     def son_gozlemler(self) -> dict[str, Any]:
         # sondurumlar/ilmerkezleri sadece istNo döner. il adı için
