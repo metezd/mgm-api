@@ -154,14 +154,13 @@ import json
 import logging
 import os
 import re
-import socket
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import SplitResult
-import requests
+
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
