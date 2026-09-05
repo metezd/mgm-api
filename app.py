@@ -154,13 +154,14 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import SplitResult
-
+import requests
 from flask import Flask, Response, g, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -168,11 +169,13 @@ from pydantic import BaseModel, ValidationError
 
 from api.alerts import (
     AlertWebhookError,
-    event_id as alert_event_id,
     parse_webhook_url,
     resolve_safe_ips,
     send_webhook,
     validate_webhook_target,
+)
+from api.alerts import (
+    event_id as alert_event_id,
 )
 from api.auth import ListeYetkiService
 from api.middleware import RateLimiter, route_limit_setting, validate_date_range, validate_json_body
