@@ -23,7 +23,7 @@
 docker compose up --build
 ```
 
-Docker olmadan çalıştırmak veya buluta deploy etmek için detaylı yönergeleri [docs/development.md](docs/development.md) dosyasında bulabilirsiniz.
+Docker olmadan çalıştırmak veya buluta deploy etmek için detaylı yönergeler [docs/development.md](docs/development.md) dosyasında bulunur.
 
 ## Gömülü Kullanım
 
@@ -76,90 +76,20 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 }
 ```
 
-> **Not:** URL parametrelerinde Türkçe karakter (ı, İ, ş, Ş, vb.) sorun yaratıyorsa standart ASCII karakterler kullanın (Örn: `Istanbul`, `Bakirkoy`, `Kadikoy`).
+> **Not:** URL parametrelerinde Türkçe karakter (ı, İ, Ğ, vb.) sorun yaratıyorsa standart ASCII karakterler kullanın (Örn: `Istanbul`, `Bakirkoy`, `Kadikoy`).
 
-## Endpoint Referansı
+## API Referansı
 
-Tüm endpoint'lerin detaylı şeması, parametreleri ve test arayüzü **`/docs`** içinde
-
-| HTTP Metodu | Endpoint | Açıklama |
-| :--- | :--- | :--- |
-| `GET` | `/hava-durumu/<il>` | İlin (ve `?ilce=`) anlık durumu ve 5 günlük tahmini. |
-| `GET` | `/ara?q=...` | Hatalı/karmaşık girdi toleranslı akıllı arama. `"kadikoy/istanbul"` gibi metinleri çözer. |
-| `GET` | `/uyarilar?il=...` | MGM'nin aktif sarı/turuncu/kırmızı kodlu uyarı kartları. |
-| `GET` | `/konum?lat=...&lon=...` | Enlem ve boylam (GPS) koordinatlarına göre anlık veri. |
-| `GET` | `/hava-kalitesi/<il>` | Anlık hava kalitesi (PM10, PM2.5, NO2) ve UV indeksi. |
-| `GET` | `/gun-ay-bilgisi/<il>` | Gün doğumu/batımı ve yerel formülle hesaplanmış Ay Evresi. |
-| `GET` | `/polen/<il>` | Sezonluk polen ve alerji riski indeksi (çimen, zeytin, huş vb.). |
-| `GET` | `/deniz/<il>?lat=&lon=` | Deniz suyu sıcaklığı, dalga yüksekliği, periyodu ve yönü. |
-| `GET` | `/sondurum/en-dusuk-sicakliklar?tarih=` | Türkiye geneli gerçekleşen en düşük sıcaklıklar. |
-| `GET` | `/sondurum/en-yuksek-sicakliklar?tarih=` | Türkiye geneli gerçekleşen en yüksek sıcaklıklar. |
-| `GET` | `/sondurum/toplam-yagis?tarih=` | Türkiye geneli gerçekleşen toplam yağış (mm). |
-| `GET` | `/sondurum/kar-kalinliklari` | Türkiye geneli anlık kar yüksekliği (cm). |
-| `GET` | `/sondurum/son-gozlemler` | İl merkezlerinde anlık ölçüm (sıcaklık, nem, yağış, rüzgar, basınç, hadise). |
-| `POST` | `/toplu` | Tek istekte çoklu konum sorgusu (`{"sorgular": ["istanbul", "bursa"]}`). Paralel çalışır. |
-| `POST` | `/favoriler` | Yeni public `liste_id`, `manage_token` ve `read_token` tokenlar yalnızca bu yanıtta düz metin döner. |
-| `POST/DELETE` | `/favoriler/<liste_id>` | `Authorization: Bearer <manage_token>` ile favori ekleme veya silme. |
-| `GET` | `/favoriler/<liste_id>` | `Authorization: Bearer <read_token>` ile listedeki tüm favoriler için hava durumunu `/toplu` mantığıyla tek istekte döner. |
-| `GET` | `/favoriler/<liste_id>/liste` | `Authorization: Bearer <read_token>` ile hava durumunu çekmeden kayıtlı sorguları döner. |
-| `POST` | `/alerts/<liste_id>` | `manage_token` ile webhook bildirim kaydı ekler (`{"tur", "il", "webhookUrl", "esik", "yon"}`). |
-| `DELETE` | `/alerts/<liste_id>/<alert_id>` | `manage_token` ile kayıtlı bildirim kuralını siler. |
-| `GET` | `/alerts/<liste_id>` | `read_token` ile kayıtlı tüm bildirim kurallarını listeler. |
-| `POST` | `/api/v1/alerts/check` | Kayıtlı tüm bildirimleri değerlendirir, tetiklenenlere webhook gönderir. `Authorization: Bearer <CRON_SECRET>` gerekir. |
-| `GET` | `/map/geojson` | Harita kütüphaneleri (Leaflet/Mapbox) için 81 ilin sıcaklık verili GeoJSON çıktısı |
-| `GET` | `/don-uyarisi/<il>` | Tarımsal don ve kırağı riski değerlendirmesi |
-| `GET` | `/metrics` | Sistem performans takibi için Prometheus ölçümleri |
-
-Rate Limit
------------------------------------
-- `GET /hava-durumu/<il>`: IP başına dakikada 60 istek.
-- `POST /toplu`: IP başına dakikada 10 istek; en fazla `APP_TOPLU_MAX_SORGU` lokasyon.
-- `GET /map/geojson`: IP başına dakikada 2 istek.
-- `GET /gecmis`: IP başına dakikada 10 istek; `start` ve `end` aralığı en fazla 31 gün.
-- `POST /alerts/<liste_id>`: IP başına dakikada 10 istek.
-- `POST /webhook/test`: IP başına dakikada 3 istek.
-- JSON body en fazla `APP_MAX_JSON_BODY_BYTES`, yanıt en fazla `APP_MAX_RESPONSE_BYTES` byte olabilir.
-- Webhook URL en fazla `APP_MAX_WEBHOOK_URL_LENGTH` karakter olabilir; liste başına alert sayısı `APP_ALERT_MAX_KAYIT` ile sınırlıdır.
-- Depolama: REDIS_URL varsa sayaçlar Redis'te tutulur, tüm instance'lar paylaşır; Redis sayacı atomik Lua script ile artırılır.
-- Proxy arkasında çalışıyorsanız yalnızca kendi proxy ağlarınızı `APP_TRUSTED_PROXY_CIDRS` ile tanımlayın. Boş bırakılırsa `X-Forwarded-For` yok sayılır.
-
-Favoriler
----------
-- `liste_id` public/read identifier'dır; değişiklik için `manage_token`, okuma için `read_token` gerekir.
-- Limit: Liste başına en fazla 30 kayıt (APP_FAVORI_MAX_KAYIT).
-- Toplu okuma: `GET /favoriler/<liste_id>`, tüm sorgular için `/toplu` mantığıyla hava durumunu döner.
-
-## Uyarılar ve Bildirim Motoru (Webhook)
-
-Belirli hava durumu olayları gerçekleştiğinde (yağmur başlangıcı, ani sıcaklık düşüşü, fırtına veya resmi MGM uyarıları) kendi uygulamalarınıza otomatik Webhook bildirimleri gönderebilirsiniz.
-
-* **Esnek Kurallar:** İster eşik bazlı (örn. rüzgar hızı 50km/s'yi geçerse sürekli bildir), ister olay bazlı (örn. yağmur başladığında veya durduğunda bir kez bildir) kurallar oluşturabilirsiniz.
-* **Üyeliksiz ve Pratik:** Favori sistemindeki gibi kendi belirlediğiniz `liste_id` ile çalışır. Her liste için 30 farklı bildirim kuralı ekleyebilirsiniz.
-* **Anında İletim:** Koşullar sağlandığında, belirlediğiniz URL adresine konum, ölçüm ve zaman bilgilerini içeren net bir JSON paketi postalanır.
-* **Retry:** Timeout, bağlantı hataları ve `408`, `425`, `429`, `5xx` yanıtları sınırlı exponential backoff ile yeniden denenir. `4xx` yanıtlar yeniden denenmez.
-* **Idempotency:** Her olay `eventId` ve `Idempotency-Key` taşır. Alıcı aynı anahtarı daha önce işlediyse olayı tekrar uygulamamalıdır.
-* **İmza:** `APP_ALERT_WEBHOOK_SIGNING_SECRET` tanımlıysa `X-MGM-Alert-Signature` HMAC-SHA256 olarak gönderilir. İmzalanan veri `timestamp + "." + raw_json_body` biçimindedir; zaman damgası `X-MGM-Alert-Timestamp` header'ındadır.
-
-### Bildirimleri Tetikleme
-Sunucuyu yormamak adına uygulamanın içinde sürekli çalışan bir arka plan görevi yoktur. Bildirimleri kontrol edip göndermesi için sisteminizi dışarıdan düzenli olarak tetiklemeniz gerekir (Örn: Her 10 dakikada bir).
-
-**Linux Crontab** veya **GitHub Actions** gibi ücretsiz servislerle otomatik yapılabilir:
-
-Örnek GitHub Actions Görevi (`.github/workflows/alert-check.yml`):
-```yaml
-on:
-  schedule:
-    - cron: "*/10 * * * *"
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          curl -X POST -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            https://<sunucu-adresiniz>/api/v1/alerts/check
-```
+| Endpoint | Açıklama | HTTP Metodu |
+| :--- | :--- | :---: |
+| `/hava` | Belirli bir konum için anlık hava durumu sorgular. | `GET` |
+| `/toplu` | Birden fazla konum için aynı anda sorgulama yapar. | `GET` |
+| `/favoriler` | Kayıtlı favori konumları yönetir ve sorgular. | `GET/POST/DELETE` |
+| `/alerts` | Hava durumu uyarılarını takip eder ve webhook tetikler. | `GET/POST` |
+| `/metrics` | API performans ve cache istatistiklerini döner. | `GET` |
 
 ## Daha fazlası
 
 - [docs/development.md](docs/development.md)
 - [docs/resilience.md](docs/resilience.md)
+- [docs/endpoint.md](docs/endpoint.md)
