@@ -383,7 +383,7 @@ class _MGMWeatherTemel:
         def loader() -> Any:
             # Circuit breaker açıkken MGM'ye hiç istek atılmaz, hemen hata
             # dönülür. Not: bu yalnızca asıl ağ isteğini engeller ve çağıran
-            # `_cached_get` zaten stale veri varsa onu döndürmüş olabilir. 
+            # `_cached_get` zaten stale veri varsa onu döndürmüş olabilir.
             # Yani MGM kesintisi sırasında elde stale veri varsa kullanıcı bundan
             # etkilenmez sadece breaker gereksiz ağ isteklerini keser
             if not self._circuit_breaker.izin_var_mi():
