@@ -45,8 +45,7 @@ sunucu = [
 ]
 
 [tool.setuptools]
-py-modules = ["mgm_client"]
-packages = ["api", "mgm", "mgm.sources"]
+packages = ["mgm_client", "api"]
 
 [tool.ruff]
 line-length = 115
