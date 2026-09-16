@@ -21,3 +21,8 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"

@@ -6,6 +6,14 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Dockerfile `python:3.14-slim`'den `python:3.13-slim`'e geri alındı.
+  Dependabot'un Docker imaj bump'ı CI'da (main.yml yalnızca 3.13 ile
+  lint/test çalıştırıyor, Docker build etmiyor) yakalanamayan bir hataya
+  yol açtı. `.github/dependabot.yml`'a Python imajı için minör/majör
+  sürüm güncellemelerini durduran bir `ignore` kuralı eklendi; patch/
+  digest (güvenlik) güncellemeleri hâlâ otomatik önerilir. 3.14'e geçiş
+  manuel doğrulamadan sonra tekrar denenmeli.
+
 - Akıllı Özetleme (NLP) eklendi (`akilli_ozet()` / `GET /akilli-ozet/<il>`):
   güncel durum ve 5 günlük tahmini kural tabanlı (rule-based) doğal dil
   üretimiyle tek bir Türkçe özet paragrafına, öne çıkan noktalara
