@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -1469,10 +1470,10 @@ class TestSonDurumlarAilesi(unittest.TestCase):
 
 class TestAkilliOzet(unittest.TestCase):
     """akilli_ozet: hava_durumu()'nun döndürdüğü güncel durum + 5 günlük
-    tahmini kural tabanlı doğal dil üretimiyle Türkçe özete
-    çevirir"""
+    tahmini kural tabanlı (rule-based) doğal dil üretimiyle Türkçe özete
+    çevirir (öne çıkan noktalar, uyarılar, sıcaklık trendi)."""
 
-    _HAVA_DURUMU_ORNEK = {
+    _HAVA_DURUMU_ORNEK: ClassVar[dict[str, Any]] = {
         "il": "İstanbul",
         "ilce": "Kadıköy",
         "istasyonId": 17062,
