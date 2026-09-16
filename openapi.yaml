@@ -848,6 +848,31 @@ paths:
         "404":
           $ref: "#/components/responses/BulunamadiHatasi"
 
+  /akilli-ozet/{il}:
+    get:
+      tags: [hava-durumu]
+      summary: Akıllı Özetleme (NLP) kural tabanlı Türkçe hava durumu özeti
+      description: >
+        Güncel durum + 5 günlük tahmini, şablon tabanlı bir doğal dil
+        üretim katmanıyla tek bir Türkçe özet paragrafına, öne
+        çıkan noktalara ve uyarılara çevirir.
+      parameters:
+        - $ref: "#/components/parameters/IlPath"
+        - $ref: "#/components/parameters/IlceQuery"
+      responses:
+        "200":
+          description: Türkçe doğal dil özeti
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  basarili: { type: boolean, example: true }
+                  veri:
+                    $ref: "#/components/schemas/AkilliOzet"
+        "404":
+          $ref: "#/components/responses/BulunamadiHatasi"
+
   /tahmin/{il}:
     get:
       tags: [hava-durumu]
@@ -1208,6 +1233,45 @@ components:
                   Düşük rüzgar (<10 km/h) + yüksek nem (>%60) birlikte
                   görüldüğünde radyatif kırağı için elverişli koşul
                 example: true
+        aciklama: { type: string }
+
+    AkilliOzet:
+      type: object
+      description: >
+        Kural tabanlı (rule-based) doğal dil üretimiyle oluşturulan
+        Türkçe hava durumu özeti. Bir dil modeli/ML kullanmaz; MGM'nin
+        resmi bir metin ürünü değildir.
+      properties:
+        il: { type: string, example: "İstanbul" }
+        ilce: { type: string, nullable: true, example: "Kadıköy" }
+        ozet:
+          type: string
+          description: Tek paragraflık Türkçe doğal dil özeti.
+          example: >-
+            Kadıköy, İstanbul için şu an hava parçalı bulutlu ve sıcaklık
+            27.4°C. 5 günlük tahmin: Bugün 20/27°C, Parçalı Bulutlu;
+            Yarın 19/24°C, Hafif Yağmurlu...
+        anahtarNoktalar:
+          type: array
+          items: { type: string }
+          example: ["Şu an 27.4°C, Parçalı Bulutlu", "Yarın yağış bekleniyor (Hafif Yağmurlu)"]
+        uyarilar:
+          type: array
+          items: { type: string }
+          description: Sıcak/soğuk/kuvvetli rüzgar eşiği aşan günler.
+          example: ["Pazar sıcaklık 33°C'ye çıkabilir"]
+        trend:
+          type: object
+          properties:
+            yon:
+              type: string
+              enum: [yukseliyor, dusuyor, sabit, bilinmiyor]
+              example: "yukseliyor"
+            farkC:
+              type: number
+              nullable: true
+              description: İlk ve son tahmin gününün en yüksek sıcaklık farkı.
+              example: 6.0
         aciklama: { type: string }
 
     PolenIndeksi:

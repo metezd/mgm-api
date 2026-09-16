@@ -77,6 +77,15 @@ Uç noktalar:
            MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
            göstergedir.
 
+    GET /akilli-ozet/<il>?ilce=<ilce>
+        -> Akıllı Özetleme (NLP): güncel durum + 5 günlük tahmini kural
+           tabanlı (rule-based) doğal dil üretimiyle tek bir Türkçe özet
+           paragrafına ("ozet"), öne çıkan noktalara ("anahtarNoktalar"),
+           uyarılara ("uyarilar": sıcak/soğuk/rüzgar eşiği aşımı) ve basit
+           bir sıcaklık trendine ("trend") çevirir. Bir dil modeli/ML
+           KULLANMAZ, şablon tabanlıdır; MGM'nin resmi bir metin ürünü
+           değildir.
+
     POST /favoriler
         -> Yeni public liste_id ile manage_token ve read_token üretir.
 
@@ -1555,6 +1564,21 @@ def don_uyarisi(il: str):
     try:
         istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.don_kiragi_riski(istasyon_id, il=il, ilce=ilce)
+        return jsonify({"basarili": True, "veri": veri})
+    except MGMWeatherError as exc:
+        return _hata_yanit(exc, 404)
+
+
+@app.get("/akilli-ozet/<il>")
+def akilli_ozet(il: str):
+    """
+    Akıllı Özetleme (NLP): güncel durum + 5 günlük tahmini kural tabanlı
+    doğal dil üretimiyle tek bir Türkçe özet paragrafına, kısa öne çıkan
+    noktalara ve uyarılara çevirir
+    """
+    ilce = request.args.get("ilce")
+    try:
+        veri = mgm.akilli_ozet(il, ilce)
         return jsonify({"basarili": True, "veri": veri})
     except MGMWeatherError as exc:
         return _hata_yanit(exc, 404)

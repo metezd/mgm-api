@@ -4,6 +4,15 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 `0.x` sürümlerde API henüz kararlı kabul edilmez, küçük sürümler
 (0.1 → 0.2) arasında bile geriye dönük uyumsuz değişiklik olabilir.
 
+## [Yayınlanmadı]
+
+- Akıllı Özetleme (NLP) eklendi (`akilli_ozet()` / `GET /akilli-ozet/<il>`):
+  güncel durum ve 5 günlük tahmini kural tabanlı (rule-based) doğal dil
+  üretimiyle tek bir Türkçe özet paragrafına, öne çıkan noktalara
+  (`anahtarNoktalar`), uyarılara (`uyarilar`: sıcak/soğuk/rüzgar eşiği
+  aşımı) ve basit bir sıcaklık trendine (`trend`) çevirir. Bir dil
+  modeli/ML kullanmaz; MGM'nin resmi bir metin ürünü değildir.
+
 ## [0.1.0] - İlk PyPI sürümü
 
 `mgm_client.py`, `mgm-tr` adıyla bağımsız bir Python paketi olarak

@@ -1467,5 +1467,93 @@ class TestSonDurumlarAilesi(unittest.TestCase):
         self.assertIn("_uyari", sonuc)
 
 
+class TestAkilliOzet(unittest.TestCase):
+    """akilli_ozet: hava_durumu()'nun döndürdüğü güncel durum + 5 günlük
+    tahmini kural tabanlı doğal dil üretimiyle Türkçe özete
+    çevirir"""
+
+    _HAVA_DURUMU_ORNEK = {
+        "il": "İstanbul",
+        "ilce": "Kadıköy",
+        "istasyonId": 17062,
+        "enlem": 40.98,
+        "boylam": 29.03,
+        "guncel": {
+            "sicaklik": 27.4,
+            "durum": "Parçalı Bulutlu",
+            "ruzgarHizi": 12,
+            "nem": 55,
+            "kaynak": "mgm",
+        },
+        "tahmin": [
+            {"tarih": "2026-09-16", "enDusuk": 20, "enYuksek": 27, "durum": "Parçalı Bulutlu", "ruzgarHizi": 12},
+            {"tarih": "2026-09-17", "enDusuk": 19, "enYuksek": 24, "durum": "Hafif Yağmurlu", "ruzgarHizi": 18},
+            {"tarih": "2026-09-18", "enDusuk": 17, "enYuksek": 22, "durum": "Yağmurlu", "ruzgarHizi": 22},
+            {"tarih": "2026-09-19", "enDusuk": 15, "enYuksek": 20, "durum": "Çok Bulutlu", "ruzgarHizi": 45},
+            {"tarih": "2026-09-20", "enDusuk": 14, "enYuksek": 33, "durum": "Açık", "ruzgarHizi": 8},
+        ],
+        "gunDogumu": "06:45",
+        "gunBatimi": "19:20",
+        "ayEvresi": {"evreAdi": "Dolunay"},
+    }
+
+    def test_ozet_paragrafi_guncel_durumu_icerir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with patch.object(MGMWeather, "hava_durumu", return_value=self._HAVA_DURUMU_ORNEK):
+            sonuc = client.akilli_ozet("İstanbul", "Kadıköy")
+
+        self.assertIn("27.4°C", sonuc["ozet"])
+        self.assertIn("parçalı bulutlu", sonuc["ozet"].lower())
+        self.assertEqual(sonuc["il"], "İstanbul")
+        self.assertEqual(sonuc["ilce"], "Kadıköy")
+
+    def test_yagisli_gunler_anahtar_noktalara_eklenir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with patch.object(MGMWeather, "hava_durumu", return_value=self._HAVA_DURUMU_ORNEK):
+            sonuc = client.akilli_ozet("İstanbul")
+
+        yagisli_noktalar = [n for n in sonuc["anahtarNoktalar"] if "yağış bekleniyor" in n]
+        self.assertEqual(len(yagisli_noktalar), 2)  # Hafif Yağmurlu + Yağmurlu
+
+    def test_esik_asan_ruzgar_ve_sicaklik_uyarilara_eklenir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with patch.object(MGMWeather, "hava_durumu", return_value=self._HAVA_DURUMU_ORNEK):
+            sonuc = client.akilli_ozet("İstanbul")
+
+        self.assertTrue(any("kuvvetli rüzgar" in u.lower() for u in sonuc["uyarilar"]))
+        self.assertTrue(any("33°c" in u.lower() for u in sonuc["uyarilar"]))
+
+    def test_sicaklik_trend_yukselis_dogru_hesaplanir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with patch.object(MGMWeather, "hava_durumu", return_value=self._HAVA_DURUMU_ORNEK):
+            sonuc = client.akilli_ozet("İstanbul")
+
+        # ilk gün enYuksek=27, son gün enYuksek=33 -> +6.0
+        self.assertEqual(sonuc["trend"], {"yon": "yukseliyor", "farkC": 6.0})
+
+    def test_gun_etiketleri_bugun_yarin_ve_hafta_gunu_adi_kullanir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with patch.object(MGMWeather, "hava_durumu", return_value=self._HAVA_DURUMU_ORNEK):
+            sonuc = client.akilli_ozet("İstanbul")
+
+        self.assertIn("Bugün", sonuc["ozet"])
+        self.assertIn("Yarın", sonuc["ozet"])
+        # 2026-09-18 Cuma, 2026-09-19 Cumartesi, 2026-09-20 Pazar
+        self.assertIn("Cuma", sonuc["ozet"])
+        self.assertIn("Cumartesi", sonuc["ozet"])
+        self.assertIn("Pazar", sonuc["ozet"])
+
+    def test_bos_tahmin_ve_guncelde_ozet_bos_dusmez(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        bos_veri = {"il": "Rize", "ilce": None, "guncel": {}, "tahmin": []}
+        with patch.object(MGMWeather, "hava_durumu", return_value=bos_veri):
+            sonuc = client.akilli_ozet("Rize")
+
+        self.assertTrue(sonuc["ozet"])
+        self.assertIn("yeterli veri yok", sonuc["ozet"])
+        self.assertEqual(sonuc["anahtarNoktalar"], [])
+        self.assertEqual(sonuc["trend"], {"yon": "bilinmiyor", "farkC": None})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from ._base import _MGMWeatherTemel
 from ._don_gun_ay import _DonGunAyMixin
 from ._harita import _HaritaMixin
 from ._kalite_deniz import _KaliteDenizMixin
+from ._ozet import _OzetMixin
 from ._sondurum import _SondurumMixin
 from ._tahmin import _TahminMixin
 from ._turkiye_geneli import _TurkiyeGeneliMixin
@@ -25,6 +26,7 @@ class MGMWeather(
     _DonGunAyMixin,
     _HaritaMixin,
     _AramaMixin,
+    _OzetMixin,
 ):
     """servis.mgm.gov.tr uç noktalarına istek atan istemci (bkz. paket
     docstring'i, mgm_client/__init__.py). Alan tanımları _MGMWeatherTemel'de,

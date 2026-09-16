@@ -86,6 +86,7 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 | `/toplu` | Birden fazla konum için aynı anda sorgulama yapar. | `GET` |
 | `/favoriler` | Kayıtlı favori konumları yönetir ve sorgular. | `GET/POST/DELETE` |
 | `/alerts` | Hava durumu uyarılarını takip eder ve webhook tetikler. | `GET/POST` |
+| `/akilli-ozet/<il>` | Güncel durum + tahmini kural tabanlı NLG ile Türkçe özet paragrafına çevirir. | `GET` |
 | `/metrics` | API performans ve cache istatistiklerini döner. | `GET` |
 
 ## Daha fazlası
