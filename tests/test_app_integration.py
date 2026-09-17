@@ -999,5 +999,63 @@ class TestKonumVeAramaDogrulama(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
 
+class TestEtagConditionalGet(unittest.TestCase):
+    """GET yanıtlarında ETag üretimi ve If-None-Match ile 304 Not
+    Modified davranışı (etag_ve_conditional_get after_request hook'u)."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_basarili_get_yanitinda_etag_ve_cache_control_var(self):
+        resp = self.client.get("/istasyonlar/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNotNone(resp.headers.get("ETag"))
+        self.assertEqual(resp.headers.get("Cache-Control"), "no-cache")
+
+    def test_eslesen_if_none_match_304_doner_govde_bos(self):
+        ilk = self.client.get("/istasyonlar/İstanbul")
+        etag = ilk.headers["ETag"]
+
+        ikinci = self.client.get("/istasyonlar/İstanbul", headers={"If-None-Match": etag})
+        self.assertEqual(ikinci.status_code, 304)
+        self.assertEqual(ikinci.get_data(), b"")
+
+    def test_eslesmeyen_if_none_match_200_doner_tam_govde(self):
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"If-None-Match": '"eslesmeyen-etag"'}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreater(len(resp.get_data()), 0)
+
+    def test_iki_farkli_il_farkli_etag_uretir(self):
+        istanbul = self.client.get("/istasyonlar/İstanbul")
+        ankara = self.client.get("/istasyonlar/Ankara")
+        self.assertNotEqual(istanbul.headers["ETag"], ankara.headers["ETag"])
+
+    def test_health_endpoint_etag_almaz(self):
+        resp = self.client.get("/health")
+        self.assertNotIn("ETag", resp.headers)
+
+    def test_metrics_endpoint_etag_almaz(self):
+        resp = self.client.get("/metrics")
+        self.assertNotIn("ETag", resp.headers)
+
+    def test_hata_yanitinda_etag_yok(self):
+        resp = self.client.get("/istasyonlar/<img src=x onerror=alert(1)>")
+        self.assertEqual(resp.status_code, 400)
+        self.assertNotIn("ETag", resp.headers)
+
+    def test_post_istegi_etag_almaz(self):
+        resp = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
+        self.assertNotIn("ETag", resp.headers)
+
+
 if __name__ == "__main__":
     unittest.main()

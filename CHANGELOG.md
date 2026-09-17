@@ -6,6 +6,15 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- ETag / 304 Not Modified desteği eklendi: başarılı (200), akışsız
+  `GET` yanıtlarına `ETag` (Werkzeug `add_etag()`/`make_conditional()`)
+  ve `Cache-Control: no-cache` header'ları eklenir; istemci aynı
+  `ETag`'i `If-None-Match` ile gönderirse gövde tekrar üretilip
+  gönderilmeden `304 Not Modified` döner. `/health` ve `/metrics`
+  kapsam dışı. Prometheus metrikleri de 304'ü doğru sayar (hook,
+  `metrik_kaydet`'ten önce çalışacak şekilde sıralandı). 8 yeni test
+  (`TestEtagConditionalGet`). Detaylar: `docs/resilience.md`.
+
 - Girdi doğrulama/sanitization: `<il>` path parametresi, `ilce`/`il`/`q`
   query parametreleri artık route'a girmeden Pydantic v2 katmanında
   sıkı regex + uzunluk validasyonundan geçiyor (`KonumSorguModel`,

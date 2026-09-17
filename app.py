@@ -1025,6 +1025,29 @@ def metrik_kaydet(response):
     return response
 
 
+# /health her zaman taze olmalı, /metrics her scrape'te değişir
+_ETAG_HARIC_YOLLAR = {"/health", "/metrics"}
+
+
+@app.after_request
+def etag_ve_conditional_get(response):
+    """
+    GET isteklerinde yanıt gövdesinden bir ETag üretir; isteğin
+    If-None-Match header'ı eşleşiyorsa gövdeyi tekrar göndermeden
+    304 Not Modified döner, akışsız GET yanıtlarına uygulanır
+    """
+    if (
+        request.method == "GET"
+        and response.status_code == 200
+        and not response.direct_passthrough
+        and request.path not in _ETAG_HARIC_YOLLAR
+    ):
+        response.add_etag()
+        response.make_conditional(request)
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 @app.get("/metrics")
 def metrics():
     CIRCUIT_BREAKER_DURUM_GAUGE.set(

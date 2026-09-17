@@ -176,3 +176,32 @@ Uygulamanın ağ üzerinde nasıl ayağa kalkacağını ve hangi sunucu motorunu
 | `APP_PORT` | `5000` |
 | `APP_SERVER` | `waitress` |
 | `FLASK_DEBUG` | *(Sadece `APP_SERVER=flask` iken aktiftir)* |
+
+## HTTP Önbelleği (ETag / 304 Not Modified)
+
+Sunucu tarafındaki önbellekten bağımsız olarak, her
+başarılı `GET` yanıtı bir `ETag` header'ı ile döner. İstemci bir
+sonraki istekte aynı `ETag`'i `If-None-Match` header'ında gönderirse
+ve veri değişmediyse sunucu tüm JSON gövdesini tekrar göndermek
+yerine boş gövdeli `304 Not Modified` döner — tekrarlanan isteklerde
+bant genişliğinden tasarruf sağlar.
+
+* `ETag`, yanıt gövdesinin hash'inden üretilir (Werkzeug'un
+  `Response.add_etag()`/`make_conditional()` yardımcıları kullanılır);
+  ayrıca standart bir `Cache-Control: no-cache` gönderilir — istemci
+  yanıtı önbellekleyebilir ama her seferinde `If-None-Match` ile
+  doğrulamalıdır (arka plandaki verinin taze olup olmadığından
+  bağımsız olarak asla "sessizce" bayat veri sunulmaz).
+* Yalnızca başarılı (`200`), akışsız `GET` yanıtlarına uygulanır.
+  `/health` ve `/metrics` her zaman güncel olması gereken/her istekte
+  değişen uç noktalar olduğu için kapsam dışıdır.
+* Hata yanıtları (4xx/5xx) ve `POST` istekleri ETag almaz.
+
+```bash
+curl -i "http://127.0.0.1:5000/hava-durumu/Istanbul" | grep -i etag
+# ETag: "8f14e45fceea167a5a36dedd4bea2543"
+
+curl -i "http://127.0.0.1:5000/hava-durumu/Istanbul" \
+  -H 'If-None-Match: "8f14e45fceea167a5a36dedd4bea2543"'
+# HTTP/1.1 304 NOT MODIFIED
+```
