@@ -7,6 +7,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      pydantic-group:
+        patterns:
+          - "pydantic"
+          - "pydantic-core"
+          - "pydantic-settings"
 
   - package-ecosystem: "github-actions"
     directory: "/"
