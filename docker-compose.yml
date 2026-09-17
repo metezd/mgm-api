@@ -31,7 +31,11 @@ services:
       redis:
         condition: service_healthy
 
-# docs/monitoring.md
+  # --- İzleme (opsiyonel) ---
+  # Varsayılan `docker compose up` bu iki servisi BAŞLATMAZ (profiles
+  # sayesinde). Etkinleştirmek için:
+  #   docker compose --profile monitoring up -d
+  # Detaylar: docs/monitoring.md
   prometheus:
     image: prom/prometheus:v3.0.1
     restart: unless-stopped

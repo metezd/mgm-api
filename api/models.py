@@ -2,11 +2,51 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# --- girdi doğrulama/sanitization deseni -----------------------------
+#
+# Kullanıcıdan alınan yer adı metinlerini XSS ve
+# enjeksiyon saldırılarına (<script>, ", ', ;, {}, ``, $() vb.) karşı
+# "izin verilenler listesi" (allow-list) mantığıyla sınırlar: yalnızca
+# burada açıkça izin verilen karakterler kabul edilir
+#
+# _YER_ADI_DESENI: il/ilçe gibi kesin yer adları için (örn. "Kadıköy",
+# "Afşin-Elbistan"). Yalnızca harf (Türkçe karakterler dahil), tek
+# boşluk, tire ve kesme işaretiyle ayrılmış harf öbekleri.
+_YER_ADI_DESENI = r"^[A-Za-zÇĞİIıÖŞÜçğıöşü]+(?:[ '\-][A-Za-zÇĞİIıÖŞÜçğıöşü]+)*$"
+
+# _ARAMA_DESENI: serbest metin arama (/ara?q=, toplu sorgu, favori
+# sorgusu) için — "kadikoy, istanbul", "kadikoy/istanbul" gibi ayraçlı
+# girdilere de izin verir. Harf, rakam, boşluk, virgül, '/', '-', '.'
+# (ardışık ayraçlar da dahil, örn. ", ").
+_ARAMA_DESENI = r"^[A-Za-z0-9ÇĞİIıÖŞÜçğıöşü]+(?:[ .,/\-]+[A-Za-z0-9ÇĞİIıÖŞÜçğıöşü]+)*$"
+
+
+class KonumSorguModel(BaseModel):
+    """`<il>` path parametresi + `ilce` query parametresi için sıkı
+    doğrulama. Yalnızca harf/boşluk/tire/kesme işareti, 1-80 karakter;
+    XSS/enjeksiyon için kullanılabilecek karakterlere (< > " ' ; { } |
+    & ` $ ( ) [ ] \\ vb.) izin vermez."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    il: str | None = Field(default=None, min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
+    ilce: str | None = Field(default=None, min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
+
+
+class SerbestAramaModel(BaseModel):
+    """Serbest metin arama parametresi (`/ara?q=` vb.) için sıkı
+    doğrulama. Harf/rakam/boşluk/virgül/'/'/'-'/'.' , 1-150 karakter;
+    aynı şekilde XSS/enjeksiyon karakterlerine izin vermez."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    sorgu: str = Field(min_length=1, max_length=150, pattern=_ARAMA_DESENI)
+
 
 class FavoriGovdeModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sorgu: str = Field(min_length=1, max_length=100)
+    sorgu: str = Field(min_length=1, max_length=150, pattern=_ARAMA_DESENI)
 
 
 class FavoriListeEkleModel(FavoriGovdeModel):
@@ -31,9 +71,11 @@ class TopluGovdeModel(BaseModel):
 
     @field_validator("sorgular")
     @classmethod
-    def sorgular_bos_olmamalı(cls, value: list[str]) -> list[str]:
-        if any(not sorgu.strip() for sorgu in value):
-            raise ValueError("listedeki her sorgu boş olmayan bir metin olmalıdır")
+    def sorgular_gecerli(cls, value: list[str]) -> list[str]:
+        for sorgu in value:
+            if not sorgu.strip():
+                raise ValueError("listedeki her sorgu boş olmayan bir metin olmalıdır")
+            SerbestAramaModel(sorgu=sorgu)  # XSS/enjeksiyon deseni + uzunluk kontrolü
         return value
 
 
@@ -41,8 +83,8 @@ class AlertGovdeModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tur: str
-    il: str = Field(min_length=1, max_length=100)
-    ilce: str | None = Field(default=None, max_length=100)
+    il: str = Field(min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
+    ilce: str | None = Field(default=None, min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
     webhookUrl: str = Field(min_length=1, max_length=2048)
     esik: float | str | None = None
     yon: str = "ustunde"

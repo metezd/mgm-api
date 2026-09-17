@@ -193,7 +193,9 @@ from api.models import (
     AlertGovdeModel,
     FavoriGovdeModel,
     FavoriListeEkleModel,
+    KonumSorguModel,
     ListeOlusturModel,
+    SerbestAramaModel,
     TopluGovdeModel,
     WebhookPayloadModel,
 )
@@ -549,6 +551,38 @@ def _pydantic_govde(model_class: type[BaseModel]):
     except ValidationError as exc:
         detay = [{"loc": hata["loc"], "msg": hata["msg"], "type": hata["type"]} for hata in exc.errors()]
         return None, (jsonify({"basarili": False, "hata": "Geçersiz istek gövdesi.", "detay": detay}), 400)
+
+
+def _konum_dogrula(il: str | None, ilce: str | None = None):
+    """`<il>` path parametresini ve `ilce` query parametresini
+    KonumSorguModel ile doğrular. XSS/enjeksiyon karakterleri içeren ya da
+    aralık dışı değerler için (None, None, (response, 400)) döner
+    geçerliyse (temizlenmiş_il, temizlenmiş_ilce, None) döner."""
+    try:
+        model = KonumSorguModel(il=(il or "").strip() or None, ilce=(ilce or "").strip() or None)
+    except ValidationError as exc:
+        detay = [{"loc": hata["loc"], "msg": hata["msg"], "type": hata["type"]} for hata in exc.errors()]
+        return None, None, (
+            jsonify({"basarili": False, "hata": "Geçersiz il/ilçe parametresi.", "detay": detay}),
+            400,
+        )
+    return model.il, model.ilce, None
+
+
+def _arama_dogrula(sorgu: str):
+    """Serbest metin arama parametresini (`/ara?q=`) SerbestAramaModel
+    ile doğrular (harf/rakam/boşluk/virgül/'/'/'-'/'.' , 1-150 karakter).
+    Geçersizse (None, (response, 400)) döner, geçerliyse
+    (temizlenmiş_sorgu, None) döner."""
+    try:
+        model = SerbestAramaModel(sorgu=sorgu)
+    except ValidationError as exc:
+        detay = [{"loc": hata["loc"], "msg": hata["msg"], "type": hata["type"]} for hata in exc.errors()]
+        return None, (
+            jsonify({"basarili": False, "hata": "Geçersiz arama metni.", "detay": detay}),
+            400,
+        )
+    return model.sorgu, None
 
 _ALERT_BELLEK: dict[str, dict] = {}
 _ALERT_LISTE_INDEX: dict[str, set[str]] = defaultdict(set)
@@ -1044,9 +1078,12 @@ def iller():
 
 @app.get("/ara")
 def ara():
-    sorgu = request.args.get("q", "").strip()
-    if not sorgu:
+    sorgu_ham = request.args.get("q", "").strip()
+    if not sorgu_ham:
         return jsonify({"basarili": False, "hata": "'q' parametresi zorunludur."}), 400
+    sorgu, hata = _arama_dogrula(sorgu_ham)
+    if hata:
+        return hata
     try:
         veri = mgm.hava_durumu_akilli(sorgu)
         return jsonify({"basarili": True, "veri": veri})
@@ -1056,7 +1093,9 @@ def ara():
 
 @app.get("/uyarilar")
 def uyarilar():
-    il = request.args.get("il")
+    il, _, hata = _konum_dogrula(request.args.get("il"))
+    if hata:
+        return hata
     try:
         return jsonify({"basarili": True, "veri": mgm.uyarilar(il)})
     except MGMWeatherError as exc:
@@ -1283,6 +1322,9 @@ def alert_kontrol():
 
 @app.get("/istasyonlar/<il>")
 def istasyonlar(il: str):
+    il, _, hata = _konum_dogrula(il)
+    if hata:
+        return hata
     try:
         return jsonify({"basarili": True, "veri": mgm.il_istasyonlari(il)})
     except MGMWeatherError as exc:
@@ -1354,7 +1396,9 @@ def health():
 
 @app.get("/guncel/<il>")
 def guncel(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         istasyon_id, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         veri = mgm.guncel_durum_yedekli(istasyon_id, enlem, boylam)
@@ -1365,7 +1409,9 @@ def guncel(il: str):
 
 @app.get("/tahmin/<il>")
 def tahmin(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.gunluk_tahmin(istasyon_id)
@@ -1376,7 +1422,9 @@ def tahmin(il: str):
 
 @app.get("/saatlik/<il>")
 def saatlik(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.saatlik_tahmin(istasyon_id)
@@ -1387,7 +1435,9 @@ def saatlik(il: str):
 
 @app.get("/hava-durumu/<il>")
 def hava_durumu(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         veri = mgm.hava_durumu(il, ilce)
         return jsonify({"basarili": True, "veri": veri})
@@ -1397,7 +1447,9 @@ def hava_durumu(il: str):
 
 @app.get("/hava-kalitesi/<il>")
 def hava_kalitesi(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
@@ -1413,7 +1465,9 @@ def hava_kalitesi(il: str):
 
 @app.get("/gun-ay-bilgisi/<il>")
 def gun_ay_bilgisi(il: str):
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
@@ -1485,7 +1539,9 @@ def polen(il: str):
     yalnızca ilgili türün sezonunda ve modelin kapsadığı konumlarda veri
     döner, aksi halde `seviye: "Veri Yok"` ile işaretlenir.
     """
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         _, enlem, boylam = _istasyon_ve_konum_getir(il, ilce)
         if enlem is None or boylam is None:
@@ -1510,7 +1566,9 @@ def deniz(il: str):
     Kıyıya daha yakın özel bir koordinat vermek için ?lat=&lon= geçilebilir
     (karasal bir il merkezi yerine, örn. bir plaj/koy koordinatı).
     """
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     lat_str = request.args.get("lat")
     lon_str = request.args.get("lon")
     try:
@@ -1560,7 +1618,9 @@ def don_uyarisi(il: str):
     MGM'nin resmi bir don uyarı ürünü DEĞİLDİR. Bkz. mgm.don_kiragi_riski
     docstring'i.
     """
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         istasyon_id = _istasyon_id_getir(il, ilce)
         veri = mgm.don_kiragi_riski(istasyon_id, il=il, ilce=ilce)
@@ -1576,7 +1636,9 @@ def akilli_ozet(il: str):
     doğal dil üretimiyle tek bir Türkçe özet paragrafına, kısa öne çıkan
     noktalara ve uyarılara çevirir
     """
-    ilce = request.args.get("ilce")
+    il, ilce, hata = _konum_dogrula(il, request.args.get("ilce"))
+    if hata:
+        return hata
     try:
         veri = mgm.akilli_ozet(il, ilce)
         return jsonify({"basarili": True, "veri": veri})
