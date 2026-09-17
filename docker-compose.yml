@@ -30,3 +30,40 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+# docs/monitoring.md
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # GRAFANA_ADMIN_PASSWORD env değişkeniyle set edilirse Grafana ilk
+      # girişte parola değiştirme istemini atlar; üretimde mutlaka
+      # değiştirin, varsayılan admin/admin yalnızca yerel/demo içindir
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
+

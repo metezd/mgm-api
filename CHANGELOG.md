@@ -6,6 +6,16 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Prometheus + Grafana izleme örneği eklendi: `docker-compose.yml`'e
+  `monitoring` profili altında (varsayılan `docker compose up`'ı
+  etkilemez) `prometheus` ve `grafana` servisleri eklendi.
+  `monitoring/prometheus.yml` `/metrics`'i scrape eder; Grafana veri
+  kaynağı ve hazır "mgm-api" dashboard'u (istek hızı, 5xx oranı, p95
+  gecikme, cache isabet oranı, circuit breaker durumu, rate-limit
+  reddi) `monitoring/grafana/provisioning/` ile otomatik yüklenir.
+  Detaylar: `docs/monitoring.md`. Etkinleştirmek için:
+  `docker compose --profile monitoring up -d`.
+
 - Dockerfile `python:3.14-slim`'den `python:3.13-slim`'e geri alındı.
   Dependabot'un Docker imaj bump'ı CI'da (main.yml yalnızca 3.13 ile
   lint/test çalıştırıyor, Docker build etmiyor) yakalanamayan bir hataya

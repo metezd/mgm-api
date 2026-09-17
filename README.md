@@ -87,10 +87,11 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 | `/favoriler` | Kayıtlı favori konumları yönetir ve sorgular. | `GET/POST/DELETE` |
 | `/alerts` | Hava durumu uyarılarını takip eder ve webhook tetikler. | `GET/POST` |
 | `/akilli-ozet/<il>` | Güncel durum + tahmini kural tabanlı NLG ile Türkçe özet paragrafına çevirir. | `GET` |
-| `/metrics` | API performans ve cache istatistiklerini döner. | `GET` |
+| `/metrics` | API performans ve cache istatistiklerini döner (Prometheus formatı). | `GET` |
 
 ## Daha fazlası
 
 - [docs/development.md](docs/development.md)
 - [docs/resilience.md](docs/resilience.md)
+- [docs/monitoring.md](docs/monitoring.md) hazır Prometheus + Grafana dashboard (`docker compose --profile monitoring up -d`)
 - [docs/endpoint.md](docs/endpoint.md)

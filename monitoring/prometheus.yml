@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "mgm-api"
+    metrics_path: /metrics
+    static_configs:
+      # docker-compose.yml'deki `app` servis adı; compose'un dahili
+      # DNS'i sayesinde konteynerler birbirini servis adıyla bulur
+      - targets: ["app:5000"]
