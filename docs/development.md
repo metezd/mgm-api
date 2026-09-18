@@ -1,6 +1,44 @@
 Hızlı başlangıç için [README](../README.md)'ye bakın. Burada Docker'ın tüm
 seçenekleri, test/lint/CI ve bağımlılık yönetimi detayları var.
 
+## Mimari: `WeatherProvider` Arayüzü (Adapter Pattern)
+
+`app.py`, hava durumu verisine ihtiyaç duyduğu HİÇBİR yerde somut
+`MGMWeather` sınıfına doğrudan bağımlı değildir — bunun yerine
+`weather_provider.py`'de tanımlı soyut `WeatherProvider` arayüzüne
+bağımlıdır. `app.py`'deki global `mgm` değişkeni bu arayüz tipiyle
+tiplenir:
+
+```python
+mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)
+```
+
+`MGMAdapter`, `WeatherProvider`'ı var olan `MGMWeather` istemcisi
+üzerinden sağlayan ince bir delege (delegation) katmanıdır — iş
+mantığının hiçbiri `weather_provider.py`'de değil, `mgm_client`
+paketinde yaşar.
+
+**Neden:** Yarın MGM'nin veri kaynağı tamamen değişirse (ya da ikinci
+bir sağlayıcı eklenirse), yapılması gereken tek şey `WeatherProvider`'ı
+implemente eden yeni bir Adapter sınıfı yazmak ve `app.py`'deki tek bir
+satırı (`mgm = MGMAdapter(...)` → `mgm = YeniAdapter(...)`)
+değiştirmek. `app.py`'deki ~25 `mgm.xxx(...)` çağrı noktasının HİÇBİRİNE
+dokunmaya gerek kalmaz.
+
+Arayüzdeki metod seti, `MGMWeather`'ın TÜM yeteneklerini değil, yalnızca
+`app.py`'nin gerçekten çağırdığı alt kümeyi kapsar ("ports and
+adapters": arayüz tüketicinin ihtiyacına göre şekillenir, sağlayıcının
+tam kapasitesine göre değil). `mgm_client`'ın arayüzde olmayan başka
+public metodları da olabilir — bunlar kütüphanenin kendi API'si olarak
+kalmaya devam eder ve doğrudan `mgm_client` import edilerek (script,
+CLI, başka bir servis vb.) kullanılabilir.
+
+Testlerde bu katman görünmez: `tests/test_app_integration.py`'deki
+`FakeMGM`, `app_module.mgm`'e doğrudan atanır. Python'ın duck typingi sayesinde `WeatherProvider`
+arayüzündeki metod isimlerini sağlayan HERHANGİ bir nesne çalışır.
+`MGMAdapter`'ın kendisi `tests/test_weather_provider.py`'de ayrıca
+test edilir.
+
 ## Docker Uygulaması
 
 Uygulamayı tüm bağımlılıklarıyla birlikte ayağa kaldırmak için aşağıdaki komutları kullanabilirsiniz:

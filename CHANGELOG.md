@@ -6,6 +6,19 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Adapter Pattern: `weather_provider.py` eklendi — soyut `WeatherProvider`
+  arayüzü (`abc.ABC`, app.py'nin gerçekten çağırdığı 23 metod) ve bunu
+  `MGMWeather` üzerinden sağlayan ince delege katmanı `MGMAdapter`.
+  `app.py`'deki global `mgm` artık `WeatherProvider` tipiyle tiplenir
+  (`mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)`); mevcut ~25
+  `mgm.xxx(...)` çağrı noktasının hiçbiri değişmedi (MGMAdapter aynı
+  isim/imzaları expose ediyor). Amaç: MGM'nin veri kaynağı tamamen
+  değişirse ya da ikinci bir sağlayıcı eklenirse tek değişecek yer
+  `app.py`'deki tek bir kurulum satırı olsun. 7 yeni test
+  (`tests/test_weather_provider.py`, gerçek `MGMWeather` ile uyumluluk
+  dahil). 191/191 test geçiyor, davranış değişikliği yok. Detaylar:
+  `docs/development.md`.
+
 - `/toplu` ve `/favoriler/<liste_id>` artık her istekte yeni bir
   `ThreadPoolExecutor` açıp kapatmak yerine, uygulama ömrü boyunca
   yaşayan **tek ve sabit boyutlu** paylaşılan bir havuz kullanıyor

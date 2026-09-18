@@ -186,8 +186,8 @@ uygulama ömrü boyunca yaşayan **tek ve sabit boyutlu** bir
 * **Daha az overhead** — thread oluşturma/yok etme maliyeti her
   istekte tekrar ödenmez.
 * **Öngörülebilir kaynak tavanı** — eski yaklaşımda N eşzamanlı
-  `/toplu` isteği, her biri kendi havuzunu
-  açtığı için toplam thread sayısı sınırsız büyüyebiliyordu, artık
+  `/toplu` isteği, her biri kendi (en fazla 10 worker'lı) havuzunu
+  açtığı için toplam thread sayısı sınırsız büyüyebiliyordu; artık
   tüm eşzamanlı batch istekleri aynı sabit boyutlu havuzu paylaşır.
 
 `MGMWeather` istemcisi thread-safe olduğu için bu paylaşım güvenlidir.

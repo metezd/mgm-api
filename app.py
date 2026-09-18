@@ -201,6 +201,7 @@ from api.models import (
     WebhookPayloadModel,
 )
 from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
+from weather_provider import MGMAdapter, WeatherProvider
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
@@ -213,7 +214,11 @@ app.config["COMPRESS_MIMETYPES"] = [
     "text/html",
 ]
 Compress(app)
-mgm = MGMWeather(
+# NOT: `mgm`, somut MGMWeather sınıfına değil soyut `WeatherProvider`
+# arayüzüne göre tiplenir (Adapter Pattern, bkz. weather_provider.py).
+# app.py'deki tüm `mgm.xxx(...)` çağrıları MGMWeather'ı değil bu
+# arayüzü hedefler; MGM tamamen değişirse tek değişecek yer burasıdır.
+_mgm_istemcisi = MGMWeather(
     timeout=int(os.getenv("MGM_TIMEOUT", "10")),
     retry_total=int(os.getenv("MGM_RETRY_TOTAL", "3")),
     retry_backoff=float(os.getenv("MGM_RETRY_BACKOFF", "0.3")),
@@ -261,6 +266,7 @@ mgm = MGMWeather(
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
     http_pool_maxsize=int(os.getenv("MGM_HTTP_POOL_MAXSIZE", "20")),
 )
+mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
@@ -570,8 +576,9 @@ def _pydantic_govde(model_class: type[BaseModel]):
 
 def _konum_dogrula(il: str | None, ilce: str | None = None):
     """`<il>` path parametresini ve `ilce` query parametresini
-    KonumSorguModel ile doğrular. XSS/enjeksiyon karakterleri içeren ya da
-    aralık dışı değerler için (None, None, (response, 400)) döner
+    KonumSorguModel ile doğrular (yalnızca harf/boşluk/tire/kesme
+    işareti, 1-80 karakter). XSS/enjeksiyon karakterleri içeren ya da
+    aralık dışı değerler için (None, None, (response, 400)) döner;
     geçerliyse (temizlenmiş_il, temizlenmiş_ilce, None) döner."""
     try:
         model = KonumSorguModel(il=(il or "").strip() or None, ilce=(ilce or "").strip() or None)
@@ -1040,7 +1047,8 @@ def metrik_kaydet(response):
     return response
 
 
-# /health her zaman taze olmalı, /metrics her scrape'te değişir
+# /health her zaman taze olmalı, /metrics her scrape'te değişir: bu
+# ikisinde ETag hesaplamak yalnızca gereksiz CPU/bellek maliyeti
 _ETAG_HARIC_YOLLAR = {"/health", "/metrics"}
 
 
@@ -1200,11 +1208,11 @@ def toplu():
             }
         ), 400
 
-    # MGMWeather client thread safe yapıdadır
-    # Paralel yürütme sayesinde N adet sorgunun toplam gecikmesi,
-    # sıralı toplam yerine en yavaş tekil sorgu süresine indirgenir.
-    with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
-        sonuclar = list(havuz.map(_hava_durumu_akilli_guvenli, sorgular))
+    # Paylaşılan _TOPLU_HAVUZ kullanılır (bkz. modül seviyesi tanım):
+    # N adet sorgunun toplam gecikmesi, sıralı toplam yerine en yavaş
+    # tekil sorgu süresine indirgenir, her istekte yeni havuz açma
+    # maliyeti olmadan.
+    sonuclar = list(_TOPLU_HAVUZ.map(_hava_durumu_akilli_guvenli, sorgular))
 
     return jsonify({"basarili": True, "veri": sonuclar})
 
@@ -1297,8 +1305,7 @@ def favori_hava_durumu(liste_id: str):
         return jsonify({"basarili": True, "veri": []})
 
     sorgular = [k["sorgu"] for k in kayitlar]
-    with ThreadPoolExecutor(max_workers=min(len(sorgular), 10)) as havuz:
-        sonuclar = list(havuz.map(_hava_durumu_akilli_guvenli, sorgular))
+    sonuclar = list(_TOPLU_HAVUZ.map(_hava_durumu_akilli_guvenli, sorgular))
 
     return jsonify({"basarili": True, "veri": sonuclar})
 
