@@ -6,6 +6,22 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- `/toplu` ve `/favoriler/<liste_id>` artık her istekte yeni bir
+  `ThreadPoolExecutor` açıp kapatmak yerine, uygulama ömrü boyunca
+  yaşayan **tek ve sabit boyutlu** paylaşılan bir havuz kullanıyor
+  (`APP_TOPLU_MAX_WORKERS`, varsayılan 20). Bu hem thread oluşturma
+  overhead'ini azaltır hem de eşzamanlı batch istekleri altında toplam
+  thread sayısının sınırsız büyümesini engeller (öngörülebilir kaynak
+  tavanı). `requests.Session`'daki HTTP connection pool boyutu da
+  (`MGM_HTTP_POOL_MAXSIZE`, varsayılan 20) worker sayısını karşılayacak
+  şekilde büyütüldü, aksi halde paralel worker'lar pool seviyesinde
+  sıraya girip paralelliğin faydasını azaltıyordu. Not: tam asenkron
+  (asyncio/httpx) bir yeniden yazım — `mgm_client`'ın tüm HTTP
+  katmanını ve sync public API'sini değiştireceği, 180+ testi
+  etkileyeceği için — kapsam dışı bırakıldı; bu, aynı faydayı çok daha
+  düşük riskle sağlayan ölçülü bir iyileştirmedir. 2 yeni test.
+  Detaylar: `docs/resilience.md`.
+
 - ETag / 304 Not Modified desteği eklendi: başarılı (200), akışsız
   `GET` yanıtlarına `ETag` (Werkzeug `add_etag()`/`make_conditional()`)
   ve `Cache-Control: no-cache` header'ları eklenir; istemci aynı

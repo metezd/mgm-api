@@ -307,6 +307,18 @@ class TestAppIntegration(unittest.TestCase):
         resp = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
         self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
 
+    def test_toplu_paylasilan_thread_havuzunu_kullanir(self):
+        # /toplu her istekte yeni bir ThreadPoolExecutor açıp kapatmak
+        # yerine modül seviyesindeki paylaşılan _TOPLU_HAVUZ'u kullanır;
+        # ardışık isteklerde havuz nesnesi değişmemeli.
+        app_module.RATE_LIMIT_BUCKETS.clear()
+        havuz_once = app_module._TOPLU_HAVUZ
+        self.client.post("/toplu", json={"sorgular": ["istanbul"]})
+        self.client.post("/toplu", json={"sorgular": ["izmir", "ankara"]})
+        self.assertIs(app_module._TOPLU_HAVUZ, havuz_once)
+        self.assertFalse(app_module._TOPLU_HAVUZ._shutdown)
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
     def test_metrics_200_ve_prometheus_formatinda(self):
         resp = self.client.get("/metrics")
         self.assertEqual(resp.status_code, 200)
@@ -659,6 +671,30 @@ class TestListeYetkilendirme(unittest.TestCase):
             headers={"Authorization": f"Bearer {data['manage_token']}"},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_favoriler_toplu_ile_ayni_paylasilan_havuzu_kullanir(self):
+        # /favoriler/<liste_id> de /toplu ile aynı paylaşılan
+        # _TOPLU_HAVUZ'u kullanır.
+        # Bu sınıf varsayılan olarak gerçek mgm istemcisini kullanıyor;
+        # burada gerçek ağ çağrısından kaçınmak için geçici olarak
+        # FakeMGM'e geçiyoruz.
+        data = self._liste_olustur()
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        self.client.post(
+            "/favoriler/yetkili-liste", json={"sorgu": "istanbul"}, headers=manage_headers
+        )
+
+        original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        try:
+            havuz_once = app_module._TOPLU_HAVUZ
+            resp = self.client.get("/favoriler/yetkili-liste", headers=read_headers)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIs(app_module._TOPLU_HAVUZ, havuz_once)
+            self.assertFalse(app_module._TOPLU_HAVUZ._shutdown)
+        finally:
+            app_module.mgm = original_mgm
 
 
 class TestAlertTransitions(unittest.TestCase):

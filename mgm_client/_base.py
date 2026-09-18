@@ -75,6 +75,7 @@ class _MGMWeatherTemel:
     piri_reis_max_mesafe_km: float = 60.0
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
+    http_pool_maxsize: int = 20
     redis_client: Any | None = None
     header_provider: Callable[[], dict[str, str]] | None = None
     session: requests.Session = field(default_factory=requests.Session)
@@ -153,7 +154,11 @@ class _MGMWeatherTemel:
             allowed_methods=frozenset({"GET"}),
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=self.http_pool_maxsize,
+            pool_maxsize=self.http_pool_maxsize,
+        )
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 

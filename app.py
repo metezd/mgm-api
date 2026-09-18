@@ -167,6 +167,7 @@ import socket  # noqa: F401 - app.py'de doğrudan çağrılmaz, testler
 import threading
 import time
 import uuid
+from atexit import register as _cikista_calistir
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import SplitResult
@@ -258,6 +259,7 @@ mgm = MGMWeather(
     piri_reis_max_mesafe_km=float(os.getenv("MGM_PIRI_REIS_MAX_MESAFE_KM", "60")),
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
+    http_pool_maxsize=int(os.getenv("MGM_HTTP_POOL_MAXSIZE", "20")),
 )
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
@@ -269,6 +271,19 @@ TOPLU_MAX_SORGU = int(os.getenv("APP_TOPLU_MAX_SORGU", "20"))
 MAX_JSON_BODY_BYTES = int(os.getenv("APP_MAX_JSON_BODY_BYTES", str(64 * 1024)))
 MAX_RESPONSE_BYTES = int(os.getenv("APP_MAX_RESPONSE_BYTES", str(2 * 1024 * 1024)))
 MAX_DATE_RANGE_DAYS = int(os.getenv("APP_MAX_DATE_RANGE_DAYS", "31"))
+
+# /toplu ve /favoriler/<liste_id>, birden çok sorguyu paralel çözmek için
+# bu havuzu paylaşır. Her istekte yeni bir ThreadPoolExecutor açıp
+# kapatmak yerine (thread yaratma/yok etme maliyeti + eşzamanlı istekler
+# altında toplam thread sayısının sınırsız büyümesi riski), uygulama
+# ömrü boyunca TEK ve SABİT boyutlu bir havuz kullanılır — kaynak
+# tavanı öngörülebilir kalır. MGMWeather istemcisi thread-safe'tir.
+TOPLU_MAX_WORKERS = int(os.getenv("APP_TOPLU_MAX_WORKERS", "20"))
+_TOPLU_HAVUZ = ThreadPoolExecutor(
+    max_workers=TOPLU_MAX_WORKERS, thread_name_prefix="toplu-sorgu"
+)
+_cikista_calistir(_TOPLU_HAVUZ.shutdown, wait=False)
+
 ROUTE_RATE_LIMITS = {
     ("GET", "/hava-durumu"): ("hava-durumu", 60),
     ("POST", "/toplu"): ("toplu", 10),
@@ -1034,7 +1049,12 @@ def etag_ve_conditional_get(response):
     """
     GET isteklerinde yanıt gövdesinden bir ETag üretir; isteğin
     If-None-Match header'ı eşleşiyorsa gövdeyi tekrar göndermeden
-    304 Not Modified döner, akışsız GET yanıtlarına uygulanır
+    304 Not Modified döner (tekrarlanan sorgularda bant genişliği
+    tasarrufu, örn. aynı il için art arda /hava-durumu isteği).
+    Yalnızca başarılı (200), akışsız GET yanıtlarına uygulanır; bu
+    fonksiyon `metrik_kaydet`'ten ÖNCE çalışacak şekilde EN SONA
+    kaydedilmiştir (Flask after_request'leri kayıt sırasının tersinde
+    çalışır), böylece Prometheus metrikleri 304'ü de doğru sayar.
     """
     if (
         request.method == "GET"

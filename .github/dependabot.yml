@@ -7,12 +7,6 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
-    groups:
-      pydantic-group:
-        patterns:
-          - "pydantic"
-          - "pydantic-core"
-          - "pydantic-settings"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -28,6 +22,12 @@ updates:
     labels:
       - "dependencies"
     ignore:
+      # Python taban imajının minör/majör sürümü (3.13 -> 3.14 gibi) manuel
+      # doğrulama gerektirir: requirements-lock.txt'teki paketlerin cp314
+      # wheel'leri olsa da CI Docker build'i test etmiyor (main.yml sadece
+      # 3.13 ile lint/test çalıştırıyor), bu yüzden Render'daki asıl deploy
+      # build'inde sessizce kırılabiliyor. Patch/digest güncellemeleri
+      # (güvenlik yamaları) hâlâ otomatik önerilir.
       - dependency-name: "python"
         update-types:
           - "version-update:semver-minor"

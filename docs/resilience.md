@@ -177,13 +177,35 @@ Uygulamanın ağ üzerinde nasıl ayağa kalkacağını ve hangi sunucu motorunu
 | `APP_SERVER` | `waitress` |
 | `FLASK_DEBUG` | *(Sadece `APP_SERVER=flask` iken aktiftir)* |
 
+## Paylaşılan Thread Havuzu (`/toplu`, `/favoriler/<liste_id>`)
+
+Birden çok sorguyu tek istekte paralel çözen bu iki uç nokta, artık
+uygulama ömrü boyunca yaşayan **tek ve sabit boyutlu** bir
+`ThreadPoolExecutor` paylaşır.
+
+* **Daha az overhead** — thread oluşturma/yok etme maliyeti her
+  istekte tekrar ödenmez.
+* **Öngörülebilir kaynak tavanı** — eski yaklaşımda N eşzamanlı
+  `/toplu` isteği, her biri kendi havuzunu
+  açtığı için toplam thread sayısı sınırsız büyüyebiliyordu, artık
+  tüm eşzamanlı batch istekleri aynı sabit boyutlu havuzu paylaşır.
+
+`MGMWeather` istemcisi thread-safe olduğu için bu paylaşım güvenlidir.
+Havuz boyutu `APP_TOPLU_MAX_WORKERS` ile ayarlanır (varsayılan 20).
+Bununla birlikte, `requests.Session`'daki alttaki HTTP connection
+pool'u da (`MGM_HTTP_POOL_MAXSIZE`, varsayılan 20) en az bu kadar
+büyük tutulmalıdır — aksi halde worker sayısı pool boyutunu aşarsa
+istekler `HTTPAdapter` seviyesinde sıraya girer ve paralelliğin
+faydası azalır.
+
 ## HTTP Önbelleği (ETag / 304 Not Modified)
 
-Sunucu tarafındaki önbellekten bağımsız olarak, her
+Sunucu tarafındaki (in-memory/Redis) önbellekten bağımsız olarak, her
 başarılı `GET` yanıtı bir `ETag` header'ı ile döner. İstemci bir
 sonraki istekte aynı `ETag`'i `If-None-Match` header'ında gönderirse
 ve veri değişmediyse sunucu tüm JSON gövdesini tekrar göndermek
 yerine boş gövdeli `304 Not Modified` döner — tekrarlanan isteklerde
+(örn. bir mobil uygulamanın aynı ili periyodik olarak yoklaması)
 bant genişliğinden tasarruf sağlar.
 
 * `ETag`, yanıt gövdesinin hash'inden üretilir (Werkzeug'un
