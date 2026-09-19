@@ -265,6 +265,8 @@ _mgm_istemcisi = MGMWeather(
     redis_url=os.getenv("REDIS_URL") or os.getenv("MGM_REDIS_URL") or None,
     redis_prefix=os.getenv("MGM_REDIS_PREFIX", "mgm-cache:"),
     http_pool_maxsize=int(os.getenv("MGM_HTTP_POOL_MAXSIZE", "20")),
+    lkg_aktif=os.getenv("MGM_LKG_AKTIF", "1") not in {"0", "false", "False"},
+    lkg_ttl_saniye=int(os.getenv("MGM_LKG_TTL_SANIYE", "10800")),
 )
 mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")

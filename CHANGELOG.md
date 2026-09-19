@@ -6,6 +6,33 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Redis Pipeline: `_redis_cift_yaz()` eklendi — her başarılı fetch'te
+  normal cache + LKG yazımı (ikisi de aktifken) artık iki ayrı Redis
+  ağ round-trip'i yerine `redis-py`'nin `pipeline(transaction=False)`
+  ile TEK round-trip'te gönderiliyor. `_yukle_singleton` ve
+  `_arka_planda_yenile`'nin başarı yollarında (en sık tetiklenen Redis
+  trafiği) kullanılıyor; LKG kapalıysa ya da yalnızca biri aktifse
+  pipeline'a gerek kalmadan tek `SETEX`'e düşülüyor — davranış aynı,
+  sadece ağ gidiş-dönüşü azaltılıyor. 5 yeni test
+  (`TestRedisPipelineYazimi`, sahte bir Redis istemcisiyle gerçek
+  `pipeline()` çağrı sayısını doğruluyor). 200/200 test geçiyor.
+  Detaylar: `docs/resilience.md`.
+
+- Son Bilinen İyi Değer (LKG) katmanı eklendi: normal önbellekten
+  (TTL + SWR, varsayılan toplam 6 dakika) tamamen ayrı, çok daha uzun
+  ömürlü (`MGM_LKG_TTL_SANIYE`, varsayılan 10800sn = 3 saat — `tahmin_ttl_saniye`
+  ile aynı) bir son çare katmanı. Yalnızca hem taze hem bayat dönem
+  tükenip gerçek MGM isteği de başarısız olduğunda devreye girer;
+  hata fırlatmak yerine son başarılı yanıt sunulur (uygulama uzun
+  kesintilerde bile tamamen "çevrimdışı" görünmez). Hem bellek içi
+  hem Redis'te (yapılandırılmışsa, konteyner restart'ına dayanıklı
+  şekilde) tutulur; `MGM_LKG_AKTIF=0` ile kapatılabilir.
+  `mgm_cache_result_total{sonuc="lkg_fallback"}` Prometheus sayacı
+  eklendi (mevcut Grafana dashboard'una otomatik yansır). 4 yeni test
+  (`TestSonBilinenIyiDeger`). 195/195 test geçiyor, mevcut TTL/SWR/
+  circuit-breaker davranışında değişiklik yok. Detaylar:
+  `docs/resilience.md`.
+
 - Adapter Pattern: `weather_provider.py` eklendi — soyut `WeatherProvider`
   arayüzü (`abc.ABC`, app.py'nin gerçekten çağırdığı 23 metod) ve bunu
   `MGMWeather` üzerinden sağlayan ince delege katmanı `MGMAdapter`.

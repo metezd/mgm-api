@@ -325,6 +325,251 @@ class _AyarlanabilirSession:
         return _DummyResponse(self.payload)
 
 
+class _BasariliSonraPatlayanSession:
+    """İlk çağrıda başarılı yanıt döner, sonraki HER çağrıda bağlantı
+    hatası fırlatır (kalıcı MGM kesintisi simülasyonu). Son Bilinen İyi
+    Değer (LKG) fallback testleri için kullanılır."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return _DummyResponse(self.payload)
+        raise requests.ConnectionError("bağlantı reddedildi (kalıcı kesinti simülasyonu)")
+
+
+class _SahtePipeline:
+    """Gerçek redis-py pipeline'ının çok küçük bir alt kümesini taklit
+    eder: setex() çağrılarını kuyruğa alır, execute() hepsini tek
+    seferde asıl sahte istemcinin store'una yazar."""
+
+    def __init__(self, store: dict[str, str]):
+        self._store = store
+        self._kuyruk: list[tuple[str, str]] = []
+
+    def setex(self, key, _ttl, value):
+        self._kuyruk.append((key, value))
+        return self
+
+    def execute(self):
+        for key, value in self._kuyruk:
+            self._store[key] = value
+        sonuc = [True] * len(self._kuyruk)
+        self._kuyruk = []
+        return sonuc
+
+
+class _SahteRedisClient:
+    """`redis.Redis`'in bu testler için gereken çok küçük bir alt
+    kümesini taklit eden, gerçek bir Redis sunucusu gerektirmeyen
+    bellek içi sahte istemci. `pipeline()` çağrı sayısını sayar, böylece
+    `_redis_cift_yaz`'ın gerçekten TEK round-trip kullandığı (ayrı ayrı
+    iki setex değil) doğrulanabilir."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+        self.pipeline_call_count = 0
+        self.setex_call_count = 0
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def setex(self, key, _ttl, value):
+        self.setex_call_count += 1
+        self.store[key] = value
+        return True
+
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+    def delete(self, key):
+        self.store.pop(key, None)
+        return 1
+
+    def ping(self):
+        return True
+
+    def pipeline(self, transaction=True):
+        self.pipeline_call_count += 1
+        return _SahtePipeline(self.store)
+
+
+class TestRedisPipelineYazimi(unittest.TestCase):
+    """_redis_cift_yaz: normal cache + LKG yazımını, ikisi de aktifse
+    ayrı ayrı iki setex yerine TEK bir Redis pipeline round-trip'inde
+    birleştirir."""
+
+    def test_ikisi_de_aktifken_tek_pipeline_cagrisi_yapilir_iki_ayri_setex_degil(self):
+        redis_client = _SahteRedisClient()
+        client = MGMWeather(
+            cache_ttl_seconds=60,
+            lkg_aktif=True,
+            lkg_ttl_saniye=100,
+            redis_client=redis_client,
+        )
+
+        client._redis_cift_yaz("test-anahtar", {"deger": 1})
+
+        self.assertEqual(redis_client.pipeline_call_count, 1)
+        self.assertEqual(redis_client.setex_call_count, 0)  # pipeline üzerinden gitti
+        self.assertIn(client._redis_key("test-anahtar"), redis_client.store)
+        self.assertIn(client._redis_lkg_key("test-anahtar"), redis_client.store)
+
+    def test_pipeline_ile_yazilan_veri_normal_okuma_ile_geri_gelir(self):
+        redis_client = _SahteRedisClient()
+        client = MGMWeather(
+            cache_ttl_seconds=60, lkg_aktif=True, lkg_ttl_saniye=100, redis_client=redis_client
+        )
+
+        client._redis_cift_yaz("test-anahtar", {"deger": 42})
+
+        ana_sonuc = client._redis_get("test-anahtar")
+        lkg_sonuc = client._redis_lkg_get("test-anahtar")
+        self.assertEqual(ana_sonuc[0], {"deger": 42})
+        self.assertEqual(lkg_sonuc, {"deger": 42})
+
+    def test_lkg_kapaliyken_pipeline_kullanilmaz_tek_setex_yeterli(self):
+        redis_client = _SahteRedisClient()
+        client = MGMWeather(
+            cache_ttl_seconds=60, lkg_aktif=False, redis_client=redis_client
+        )
+
+        client._redis_cift_yaz("test-anahtar", {"deger": 1})
+
+        self.assertEqual(redis_client.pipeline_call_count, 0)
+        self.assertEqual(redis_client.setex_call_count, 1)
+        self.assertIn(client._redis_key("test-anahtar"), redis_client.store)
+        self.assertNotIn(client._redis_lkg_key("test-anahtar"), redis_client.store)
+
+    def test_ana_cache_kapaliyken_sadece_lkg_yazilir_pipeline_kullanilmaz(self):
+        redis_client = _SahteRedisClient()
+        client = MGMWeather(
+            cache_ttl_seconds=0, lkg_aktif=True, lkg_ttl_saniye=100, redis_client=redis_client
+        )
+
+        client._redis_cift_yaz("test-anahtar", {"deger": 1})
+
+        self.assertEqual(redis_client.pipeline_call_count, 0)
+        self.assertNotIn(client._redis_key("test-anahtar"), redis_client.store)
+        self.assertIn(client._redis_lkg_key("test-anahtar"), redis_client.store)
+
+    def test_gercek_basarili_istekte_pipeline_gercekten_kullanilir(self):
+        # Uçtan uca: gerçek bir _get() çağrısı, arkada _yukle_singleton
+        # üzerinden _redis_cift_yaz'a ulaşıp pipeline'ı tetikliyor mu?
+        redis_client = _SahteRedisClient()
+        payload = [{"il": "Ankara"}]
+        session = _CountingSession(payload)
+        client = MGMWeather(
+            cache_ttl_seconds=60,
+            lkg_aktif=True,
+            lkg_ttl_saniye=100,
+            redis_client=redis_client,
+            timeout=1,
+            retry_total=0,
+        )
+        client.session = session
+
+        sonuc = client._get("merkezler", {"il": "ankara"})
+
+        self.assertEqual(sonuc, payload)
+        self.assertEqual(redis_client.pipeline_call_count, 1)
+        self.assertEqual(redis_client.setex_call_count, 0)
+
+
+class TestSonBilinenIyiDeger(unittest.TestCase):
+    """LKG: TTL + SWR penceresi de dolup gerçek istek başarısız olunca,
+    normal cache'ten tamamen ayrı, çok daha uzun ömürlü bir son çare
+    katmanından yanıt dönülür — sistem tamamen "çevrimdışı" görünmez."""
+
+    def _istek(self, client, path, params):
+        return client._get(path, params)
+
+    @staticmethod
+    def _sayac(etiket: str) -> float:
+        return CACHE_SONUC_SAYAC.labels(sonuc=etiket)._value.get()
+
+    def test_ttl_ve_swr_dolup_gercek_istek_basarisiz_olunca_lkg_donulur(self):
+        iyi_yuk = [{"deger": 1}]
+        session = _BasariliSonraPatlayanSession(iyi_yuk)
+        client = MGMWeather(
+            cache_ttl_seconds=1,
+            stale_while_revalidate_seconds=1,
+            lkg_ttl_saniye=10,
+            timeout=1,
+            retry_total=0,
+        )
+        client.session = session
+
+        ilk = self._istek(client, "merkezler", {"il": "ankara"})
+        self.assertEqual(ilk, iyi_yuk)
+
+        # TTL (1sn) + SWR (1sn) ikisi de dolsun
+        time.sleep(2.3)
+
+        lkg_once = self._sayac("lkg_fallback")
+        ikinci = self._istek(client, "merkezler", {"il": "ankara"})
+
+        self.assertEqual(ikinci, iyi_yuk)  # hata fırlamadı, LKG'den geldi
+        self.assertGreaterEqual(session.calls, 2)  # gerçek istek gerçekten denendi
+        self.assertEqual(self._sayac("lkg_fallback"), lkg_once + 1)
+
+    def test_lkg_kapaliyken_eski_davranis_korunur_hata_firlatilir(self):
+        iyi_yuk = [{"deger": 1}]
+        session = _BasariliSonraPatlayanSession(iyi_yuk)
+        client = MGMWeather(
+            cache_ttl_seconds=1,
+            stale_while_revalidate_seconds=1,
+            lkg_aktif=False,
+            timeout=1,
+            retry_total=0,
+        )
+        client.session = session
+
+        self._istek(client, "merkezler", {"il": "ankara"})
+        time.sleep(2.3)
+
+        with self.assertRaises(MGMWeatherError):
+            self._istek(client, "merkezler", {"il": "ankara"})
+
+    def test_lkg_suresi_de_dolmussa_hata_firlatilir(self):
+        iyi_yuk = [{"deger": 1}]
+        session = _BasariliSonraPatlayanSession(iyi_yuk)
+        client = MGMWeather(
+            cache_ttl_seconds=1,
+            stale_while_revalidate_seconds=1,
+            lkg_ttl_saniye=1,
+            timeout=1,
+            retry_total=0,
+        )
+        client.session = session
+
+        self._istek(client, "merkezler", {"il": "ankara"})
+        # TTL + SWR + LKG ömrünün hepsi dolsun
+        time.sleep(3.3)
+
+        with self.assertRaises(MGMWeatherError):
+            self._istek(client, "merkezler", {"il": "ankara"})
+
+    def test_basarili_yanit_normal_cache_akisini_bozmaz(self):
+        # LKG eklenmeden önceki normal taze-hit davranışı hâlâ çalışmalı.
+        iyi_yuk = [{"deger": 1}]
+        session = _CountingSession(iyi_yuk)
+        client = MGMWeather(cache_ttl_seconds=60, timeout=1, retry_total=0)
+        client.session = session
+
+        ilk = self._istek(client, "merkezler", {"il": "ankara"})
+        ikinci = self._istek(client, "merkezler", {"il": "ankara"})
+        self.assertEqual(ilk, iyi_yuk)
+        self.assertEqual(ikinci, iyi_yuk)
+        self.assertEqual(session.calls, 1)  # ikinci istek cache'ten (LKG'den değil)
+
+
 class TestCircuitBreaker(unittest.TestCase):
     def test_esik_asilinca_devre_acilir_ve_istek_atlanir(self):
         session = _PatlayanSession()

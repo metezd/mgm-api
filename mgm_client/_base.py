@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -76,11 +77,22 @@ class _MGMWeatherTemel:
     redis_url: str | None = None
     redis_prefix: str = "mgm-cache:"
     http_pool_maxsize: int = 20
+    # Son Bilinen İyi Değer (LKG): TTL + SWR penceresi de dolup gerçek
+    # istek başarısız olunca son çare olarak sunulan, çok daha uzun
+    # ömürlü ayrı bir önbellek katmanı. Hava durumu saatler içinde
+    # anlamlı şekilde değişebileceği için ömrü tahmin_ttl_saniye ile
+    # aynı (3 saat) tutulur — normal TTL/SWR'den çok daha uzun ama
+    # "dünün havası" gibi yanıltıcı olmayacak kadar kısa.
+    lkg_aktif: bool = True
+    lkg_ttl_saniye: int = 10800
+    lkg_max_entries: int = 512
     redis_client: Any | None = None
     header_provider: Callable[[], dict[str, str]] | None = None
     session: requests.Session = field(default_factory=requests.Session)
     _cache: dict[str, tuple[float, float, Any]] = field(default_factory=dict, init=False)
     _cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _lkg_cache: dict[str, tuple[float, float, Any]] = field(default_factory=dict, init=False)
+    _lkg_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _redis_available: bool = field(default=False, init=False)
     _redis_error_cls: type[BaseException] | None = field(default=None, init=False)
     _renewing: set[str] = field(default_factory=set, init=False)
@@ -288,8 +300,30 @@ class _MGMWeatherTemel:
             try:
                 sonuc = loader()
                 self._cache_set(key, sonuc)
-                self._redis_set(key, sonuc)
+                self._lkg_set(key, sonuc)
+                self._redis_cift_yaz(key, sonuc)
             except BaseException as exc:
+                if isinstance(exc, MGMWeatherError):
+                    # Gerçek istek (ve varsa SWR) başarısız oldu: son çare
+                    # olarak çok daha uzun ömürlü LKG katmanına bakılır.
+                    # Redis önce denenir (çoklu instance/restart sonrası
+                    # da hayatta kalır), yoksa bellek içi LKG denenir.
+                    lkg_sonuc = self._redis_lkg_get(key)
+                    if lkg_sonuc is None:
+                        lkg_sonuc = self._lkg_get(key)
+                    if lkg_sonuc is not None:
+                        logger.warning(
+                            "Gerçek istek başarısız (%s), son-bilinen-iyi-değerden "
+                            "sunuluyor: %s",
+                            exc,
+                            key,
+                        )
+                        CACHE_SONUC_SAYAC.labels(sonuc="lkg_fallback").inc()
+                        kayit.sonuc = lkg_sonuc
+                        kayit.event.set()
+                        with self._in_flight_lock:
+                            self._in_flight.pop(key, None)
+                        return lkg_sonuc
                 kayit.hata = exc
                 kayit.event.set()
                 with self._in_flight_lock:
@@ -364,7 +398,8 @@ class _MGMWeatherTemel:
             try:
                 yeni = loader()
                 self._cache_set(key, yeni)
-                self._redis_set(key, yeni)
+                self._lkg_set(key, yeni)
+                self._redis_cift_yaz(key, yeni)
                 logger.info("Arka plan cache yenileme tamamlandı: %s", key)
             except MGMWeatherError as exc:
                 logger.warning("Arka plan cache yenileme başarısız: %s (%s)", key, exc)
@@ -515,6 +550,127 @@ class _MGMWeatherTemel:
                 oldest_key = min(self._cache.items(), key=lambda item: item[1][0])[0]
                 del self._cache[oldest_key]
             self._cache[key] = (expires_at, yazilma_zamani, copy.deepcopy(payload))
+
+    # --- Son Bilinen İyi Değer (LKG) ---
+    #
+    # Normal cache'ten (_cache) TAMAMEN AYRI, çok daha uzun ömürlü bir
+    # katman. Yalnızca _yukle_singleton'ın başarı yolunda yazılır ve
+    # yalnızca gerçek istek + SWR ikisi de başarısız olduğunda, hata
+    # fırlatmadan hemen önce son çare olarak okunur. Normal cache
+    # okuma/yazma akışını (_cache_get/_cache_set) hiç etkilemez.
+
+    def _lkg_get(self, key: str) -> Any | None:
+        if not self.lkg_aktif or self.lkg_ttl_saniye <= 0:
+            return None
+        now = time.monotonic()
+        with self._lkg_lock:
+            entry = self._lkg_cache.get(key)
+            if entry is None:
+                return None
+            expires_at, _yazilma_zamani, payload = entry
+            if expires_at <= now:
+                del self._lkg_cache[key]
+                return None
+            return copy.deepcopy(payload)
+
+    def _lkg_set(self, key: str, payload: Any) -> None:
+        if not self.lkg_aktif or self.lkg_ttl_saniye <= 0:
+            return
+        try:
+            self._cache_response_schema_dogrula(payload)
+        except MGMWeatherError:
+            return  # LKG'ye yazılamayan (şema/boyut) veri sessizce atlanır
+        expires_at = time.monotonic() + self.lkg_ttl_saniye
+        yazilma_zamani = time.time()
+        with self._lkg_lock:
+            if len(self._lkg_cache) >= self.lkg_max_entries:
+                oldest_key = min(self._lkg_cache.items(), key=lambda item: item[1][0])[0]
+                del self._lkg_cache[oldest_key]
+            self._lkg_cache[key] = (expires_at, yazilma_zamani, copy.deepcopy(payload))
+
+    def _redis_lkg_key(self, key: str) -> str:
+        return f"{self.redis_prefix}lkg:{key}"
+
+    def _redis_lkg_get(self, key: str) -> Any | None:
+        if not self.lkg_aktif or self.lkg_ttl_saniye <= 0 or not self._redis_available:
+            return None
+        try:
+            islenmis = self._redis_islem(
+                lambda: self.redis_client.get(self._redis_lkg_key(key)),
+                "Redis LKG okuma hatası",
+            )
+        except MGMWeatherError:
+            return None
+        if islenmis is None:
+            return None
+        try:
+            sarmali = json.loads(islenmis)
+            return sarmali[_VALUE_KEY]
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _redis_lkg_set(self, key: str, payload: Any) -> None:
+        if not self.lkg_aktif or self.lkg_ttl_saniye <= 0 or not self._redis_available:
+            return
+        try:
+            self._cache_response_schema_dogrula(payload)
+        except MGMWeatherError:
+            return
+        sarmali = json.dumps(
+            {_CACHED_AT_KEY: time.time(), _VALUE_KEY: payload}, ensure_ascii=False
+        )
+        # LKG en iyi çaba (best-effort); yazılamazsa sessizce geç
+        with contextlib.suppress(MGMWeatherError):
+            self._redis_islem(
+                lambda: self.redis_client.setex(
+                    self._redis_lkg_key(key), self.lkg_ttl_saniye, sarmali
+                ),
+                "Redis LKG yazma hatası",
+            )
+
+    def _redis_cift_yaz(self, key: str, payload: Any) -> None:
+        """Normal cache (`_redis_set`) + LKG (`_redis_lkg_set`) yazımını,
+        ikisi de aktifse TEK bir Redis pipeline'ında (tek ağ round-trip'i)
+        birleştirir. Her başarılı fetch'te bu ikisi ardışık çalıştığı
+        için en sık tetiklenen Redis trafiği burasıdır — pipeline'ın en
+        çok kazandırdığı nokta. Yalnızca ağ gidiş-dönüşünü birleştirir;
+        her iki fonksiyonun kendi doğrulama/atlama davranışı korunur.
+        """
+        if not self._redis_available:
+            return
+
+        lkg_yazilabilir = False
+        if self.lkg_aktif and self.lkg_ttl_saniye > 0:
+            try:
+                self._cache_response_schema_dogrula(payload)
+                lkg_yazilabilir = True
+            except MGMWeatherError:
+                lkg_yazilabilir = False
+
+        ana_yazilabilir = self.cache_ttl_seconds > 0
+
+        if not ana_yazilabilir and not lkg_yazilabilir:
+            return
+        if not lkg_yazilabilir:
+            self._redis_set(key, payload)
+            return
+        if not ana_yazilabilir:
+            self._redis_lkg_set(key, payload)
+            return
+
+        # İkisi de geçerli: TEK pipeline'da birleştir (asıl kazanç burada).
+        zaman = time.time()
+        sarmali = json.dumps({_CACHED_AT_KEY: zaman, _VALUE_KEY: payload}, ensure_ascii=False)
+        omur = self._cache_omru()
+
+        def _pipeline_calistir() -> None:
+            pipe = self.redis_client.pipeline(transaction=False)
+            pipe.setex(self._redis_key(key), omur, sarmali)
+            pipe.setex(self._redis_lkg_key(key), self.lkg_ttl_saniye, sarmali)
+            pipe.execute()
+
+        with contextlib.suppress(MGMWeatherError):
+            self._redis_islem(_pipeline_calistir, "Redis pipeline yazma hatası")
 
     def _redis_key(self, key: str) -> str:
         return f"{self.redis_prefix}{key}"

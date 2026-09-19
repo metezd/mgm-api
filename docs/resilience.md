@@ -25,6 +25,17 @@ Eşzamanlı yüksek trafik altında sistem performansını korumak için önbell
 
 **Cache Stampede Koruması:** Aynı anahtar için tazeleme gerektiğinde, sistem yalnızca tek bir isteğin arka planda yenileme yapmasına izin verir. SWR mekanizmasını devre dışı bırakmak için `MGM_STALE_WHILE_REVALIDATE=0` ayarlanmalıdır.
 
+## Son Bilinen İyi Değer (LKG — Last-Known-Good)
+
+Normal önbellekten (`MGM_CACHE_TTL` + `MGM_STALE_WHILE_REVALIDATE`, varsayılan toplam 6 dakika) **tamamen ayrı**, çok daha uzun ömürlü bir son çare katmanı. Amaç: uygulama, MGM'nin normal SWR penceresinden daha uzun süren kesintilerinde bile tamamen "çevrimdışı" görünmesin.
+
+* **Ne zaman devreye girer:** Yalnızca hem taze hem bayat (SWR) dönem tükenip gerçek MGM isteği de başarısız olduğunda — yani sistem zaten hata döndürmek üzereyken, hata fırlatmadan hemen önce son çare olarak kontrol edilir. Normal taze/bayat cache akışını hiçbir şekilde etkilemez.
+* **Ömrü (`MGM_LKG_TTL_SANIYE`, varsayılan 10800 = 3 saat):** Kasıtlı olarak 24 saat gibi uzun değil — hava durumu saatler içinde anlamlı şekilde değişebileceği için "dünün havası"nı güncelmiş gibi sunmak yanıltıcı olurdu. 3 saat, mevcut `tahmin_ttl_saniye` (5 günlük tahmin önbellek süresi) ile aynı değer — projede zaten "bu kadarlık bir bayatlık kabul edilebilir" kararı verilmiş bir eşik.
+* **Nerede saklanır:** Hem bellek içi hem (yapılandırılmışsa) Redis'te ayrı bir anahtar alanında (`<prefix>lkg:<key>`) — Redis'te tutulması, konteyner yeniden başlasa bile (ör. Render'da deploy sırasında) LKG verisinin hayatta kalmasını sağlar.
+* **Redis Pipeline:** Her başarılı fetch, normal cache'i VE LKG'yi aynı anda günceller — bu ikisi ayrı ayrı yazılsaydı iki ayrı Redis ağ round-trip'i gerekirdi. `_redis_cift_yaz()`, ikisi de aktifse bu iki `SETEX`'i tek bir Redis pipeline'ında (`redis-py`'nin `pipeline(transaction=False)`'ı) birleştirip tek round-trip'te gönderir — en sık tetiklenen Redis trafiği bu yol olduğu için asıl kazanç burada. LKG kapalıysa (ya da yalnızca biri aktifse) pipeline'a gerek kalmadan doğrudan tek `SETEX` kullanılır.
+* **Kapatma:** `MGM_LKG_AKTIF=0` ile tamamen devre dışı bırakılabilir; bu durumda süresi dolmuş dönemden sonraki başarısız istek eskisi gibi doğrudan hataya düşer.
+* **İzleme:** Her LKG fallback'i `mgm_cache_result_total{sonuc="lkg_fallback"}` Prometheus sayacını artırır (mevcut Grafana dashboard'undaki "Cache Sonuçları" paneline otomatik yansır) ve bir `logger.warning(...)` kaydı bırakır.
+
 ## Circuit Breaker
 
 MGM servisinin art arda hata döndürdüğü durumlarda sistemi korumak için Devre Kesici devreye girer.
@@ -136,6 +147,8 @@ In-memory veya Redis önbellek altyapısının TTL sürelerini ve kapasite sın�
 | `MGM_CACHE_TTL` | `60` |
 | `MGM_STALE_WHILE_REVALIDATE` | `300` |
 | `MGM_CACHE_MAX_ENTRIES` | `512` |
+| `MGM_LKG_AKTIF` | `1` |
+| `MGM_LKG_TTL_SANIYE` | `10800` |
 | `MGM_REDIS_URL` | *(Tanımsız - Redis Kapalı)* |
 | `MGM_REDIS_PREFIX` | `mgm-cache` |
 
@@ -181,7 +194,8 @@ Uygulamanın ağ üzerinde nasıl ayağa kalkacağını ve hangi sunucu motorunu
 
 Birden çok sorguyu tek istekte paralel çözen bu iki uç nokta, artık
 uygulama ömrü boyunca yaşayan **tek ve sabit boyutlu** bir
-`ThreadPoolExecutor` paylaşır.
+`ThreadPoolExecutor` paylaşır (her istekte yeni bir havuz açıp
+kapatmak yerine). Bunun iki somut faydası vardır:
 
 * **Daha az overhead** — thread oluşturma/yok etme maliyeti her
   istekte tekrar ödenmez.
