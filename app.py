@@ -270,6 +270,29 @@ _mgm_istemcisi = MGMWeather(
 )
 mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
+
+CORS_ORIGIN_WHITELIST: frozenset[str] | None = (
+    None
+    if CORS_ALLOW_ORIGIN.strip() == "*"
+    else frozenset(o.strip() for o in CORS_ALLOW_ORIGIN.split(",") if o.strip())
+)
+
+
+def _cors_origin_belirle() -> str | None:
+    """Yanıta yazılacak Access-Control-Allow-Origin değerini döner.
+
+    Whitelist modunda (APP_CORS_ALLOW_ORIGIN "*" değilse) isteğin Origin
+    header'ı whitelist'teyse o origin birebir yansıtılır (standart CORS
+    whitelist deseni); değilse ya da Origin header'ı hiç yoksa (tarayıcı
+    dışı istemci, ör. curl/sunucu-sunucu — CORS zaten yalnızca
+    tarayıcıları bağlar) None döner ve header hiç eklenmez.
+    """
+    if CORS_ORIGIN_WHITELIST is None:
+        return "*"
+    istek_origin = request.headers.get("Origin", "")
+    if istek_origin and istek_origin in CORS_ORIGIN_WHITELIST:
+        return istek_origin
+    return None
 RATE_LIMIT_WINDOW = int(os.getenv("APP_RATE_LIMIT_WINDOW_SECONDS", "60"))
 RATE_LIMIT_MAX = int(os.getenv("APP_RATE_LIMIT_MAX_REQUESTS", "60"))
 MAP_GEOJSON_RATE_LIMIT_MAX = int(
@@ -1019,7 +1042,14 @@ def guvenlik_ve_cors_headerlari(response):
             }
         )
         response.status_code = 413
-    response.headers["Access-Control-Allow-Origin"] = CORS_ALLOW_ORIGIN
+    origin = _cors_origin_belirle()
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        if CORS_ORIGIN_WHITELIST is not None:
+            # Whitelist modunda aynı path farklı Origin'lere farklı yanıt
+            # header'ı üretiyor; paylaşımlı HTTP cache'lerin (ve ETag'li
+            # yanıtlarımızın) bunu origin bazında ayırt etmesi gerekir.
+            response.headers["Vary"] = "Origin"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["X-Content-Type-Options"] = "nosniff"

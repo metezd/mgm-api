@@ -6,6 +6,22 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- **Güvenlik — CORS whitelist:** `APP_CORS_ALLOW_ORIGIN`, `"*"`
+  (varsayılan, değişmedi) yerine virgülle ayrılmış bir origin
+  whitelist'i (`https://a.com,https://b.com`) kabul edecek şekilde
+  genişletildi. Whitelist modunda yalnızca eşleşen `Origin` yansıtılır
+  (+ `Vary: Origin`), eşleşmeyen/olmayan origin'de CORS header'ı hiç
+  eklenmez. 4 yeni test (`TestCorsWhitelist`).
+
+- **Güvenlik — liste_id üretimi:** `POST /favoriler`'da `listeId`
+  verilmezse sunucu artık `secrets.token_urlsafe(18)` yerine standart
+  bir **UUID v4** üretiyor. Not: erişim kontrolü zaten `listeId`'ye
+  değil, ayrıca üretilip yalnızca hash'i saklanan (SHA-256, HMAC-safe
+  karşılaştırma) `manage_token`/`read_token`'a dayanıyordu — bu
+  değişiklik savunma derinliği amaçlıdır, client'ların kendi
+  `listeId`'sini seçebilmesi (geriye dönük uyumluluk için) korundu.
+  3 yeni test.
+
 - Redis Pipeline: `_redis_cift_yaz()` eklendi — her başarılı fetch'te
   normal cache + LKG yazımı (ikisi de aktifken) artık iki ayrı Redis
   ağ round-trip'i yerine `redis-py`'nin `pipeline(transaction=False)`

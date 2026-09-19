@@ -34,7 +34,9 @@ CIRCUIT_BREAKER_OPEN_SECONDS = 60.0
 
 CACHE_SONUC_SAYAC = Counter(
     "mgm_cache_result_total",
-    "Cache sorgu sonucu (hit: taze, stale_hit: bayat ama sunuldu, miss: hiç yok)",
+    "Cache sorgu sonucu (hit: taze, stale_hit: bayat ama sunuldu, "
+    "miss: hiç yok, lkg_fallback: gerçek istek+SWR başarısız olunca "
+    "son-bilinen-iyi-değerden sunuldu)",
     ["sonuc"],
 )
 CACHE_KEY_NAMESPACE = "mgm-api"

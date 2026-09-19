@@ -1,5 +1,6 @@
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 
 import app as app_module
@@ -579,6 +580,29 @@ class TestListeYetkilendirme(unittest.TestCase):
         self.assertEqual(hashes["manage_token_hash"], app_module._token_hash(data["manage_token"]))
         self.assertEqual(hashes["read_token_hash"], app_module._token_hash(data["read_token"]))
 
+    def test_listeid_verilmezse_sunucu_uuid_v4_uretir(self):
+        # Güvenlik: liste_id tahmin edilebilir olmamalı. Client listeId
+        # göndermezse sunucu standart, kriptografik olarak güvenli bir
+        # UUID v4 üretir
+        response = self.client.post("/favoriler", json={})
+        self.assertEqual(response.status_code, 201)
+        uretilen_id = response.get_json()["veri"]["listeId"]
+
+        ayrisik = uuid.UUID(uretilen_id)
+        self.assertEqual(ayrisik.version, 4)
+
+    def test_iki_otomatik_listeid_farklidir(self):
+        birinci = self.client.post("/favoriler", json={}).get_json()["veri"]["listeId"]
+        ikinci = self.client.post("/favoriler", json={}).get_json()["veri"]["listeId"]
+        self.assertNotEqual(birinci, ikinci)
+
+    def test_client_kendi_listeidsini_hala_secebilir(self):
+        # Geriye dönük uyumluluk: özel/akılda kalır bir liste_id isteyen
+        # client'lar hâlâ kendi ID'sini verebilir. güvenlik sınırı
+        # liste_id değil manage/read token
+        data = self._liste_olustur()
+        self.assertEqual(data["listeId"], "yetkili-liste")
+
     def test_favori_okuma_read_token_ile_yazma_manage_token_ile_yapilir(self):
         data = self._liste_olustur()
         read_headers = {"Authorization": f"Bearer {data['read_token']}"}
@@ -958,7 +982,8 @@ class TestKonumVeAramaDogrulama(unittest.TestCase):
         self.original_mgm = app_module.mgm
         app_module.mgm = FakeMGM()
         # Tüm test paketi aynı process/IP üzerinden çok sayıda istek
-        # attığı için global rate limit bucket'ı dolabilir
+        # attığı için global rate limit bucket'ı dolabilir; diğer test
+        # sınıflarındaki gibi burada da temizliyoruz.
         app_module.RATE_LIMIT_BUCKETS.clear()
 
     def tearDown(self):
@@ -972,7 +997,8 @@ class TestKonumVeAramaDogrulama(unittest.TestCase):
 
     def test_tire_ve_kesme_isaretli_yer_adi_kabul_edilir(self):
         # "Afşin-Elbistan" gibi tireli, gerçek il adı değil ama desen
-        # düzeyinde geçerli olmalı
+        # düzeyinde geçerli olmalı (MGM lookup'ı ayrı bir katmanda 404
+        # döner, burada test edilen yalnızca regex/length doğrulaması)
         resp = self.client.get("/guncel/Afşin-Elbistan")
         self.assertEqual(resp.status_code, 200)
 
@@ -1033,6 +1059,58 @@ class TestKonumVeAramaDogrulama(unittest.TestCase):
             "/favoriler", json={"sorgu": "<img src=x onerror=alert(1)>"}
         )
         self.assertEqual(resp.status_code, 400)
+
+
+class TestCorsWhitelist(unittest.TestCase):
+    """APP_CORS_ALLOW_ORIGIN whitelist modu: "*" yerine virgülle ayrılmış
+    origin listesi verildiğinde, yalnızca eşleşen Origin yansıtılır ve
+    Vary: Origin eklenir; eşleşmeyen/olmayan Origin'de header hiç
+    eklenmez."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        self.original_whitelist = app_module.CORS_ORIGIN_WHITELIST
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        app_module.CORS_ORIGIN_WHITELIST = self.original_whitelist
+
+    def test_varsayilan_joker_modda_tum_originlere_yildiz_donulur(self):
+        app_module.CORS_ORIGIN_WHITELIST = None
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"Origin": "https://her-hangi-bir-site.com"}
+        )
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+        # Origin'e göre farklı yanıt üretilmiyor, Vary: Origin gerekmez
+        # (Flask-Compress'in kendi Vary: Accept-Encoding'i olabilir, ona karışmıyoruz).
+        self.assertNotIn("Origin", resp.headers.get("Vary", ""))
+
+    def test_whitelist_modda_eslesen_origin_birebir_yansitilir(self):
+        app_module.CORS_ORIGIN_WHITELIST = frozenset({"https://izinli-site.com"})
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"Origin": "https://izinli-site.com"}
+        )
+        self.assertEqual(
+            resp.headers.get("Access-Control-Allow-Origin"), "https://izinli-site.com"
+        )
+        self.assertIn("Origin", resp.headers.get("Vary", ""))
+
+    def test_whitelist_modda_eslesmeyen_origin_header_almaz(self):
+        app_module.CORS_ORIGIN_WHITELIST = frozenset({"https://izinli-site.com"})
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"Origin": "https://kotu-site.com"}
+        )
+        self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+    def test_whitelist_modda_origin_header_yoksa_cors_header_eklenmez(self):
+        # Tarayıcı dışı istemci (curl, sunucu-sunucu) — CORS zaten
+        # yalnızca tarayıcıları bağlar, yanıt normal şekilde döner.
+        app_module.CORS_ORIGIN_WHITELIST = frozenset({"https://izinli-site.com"})
+        resp = self.client.get("/istasyonlar/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
 
 
 class TestEtagConditionalGet(unittest.TestCase):

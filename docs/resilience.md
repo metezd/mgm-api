@@ -168,6 +168,19 @@ Hata oranları yükseldiğinde MGM sunucularına giden yükü kesmek için kulla
 |---|---|
 | `APP_CORS_ALLOW_ORIGIN` | `*` |
 
+`APP_CORS_ALLOW_ORIGIN`, `"*"` ya da
+virgülle ayrılmış bir origin whitelist'i (`https://a.com,https://b.com`)
+olabilir. Whitelist modunda sunucu, isteğin `Origin` header'ını
+listeyle karşılaştırır; eşleşirse o origin `Access-Control-Allow-Origin`
+olarak birebir yansıtılır ve `Vary: Origin` eklenir (paylaşımlı
+cache'lerin origin bazında ayrım yapması için — bkz. ETag bölümü),
+eşleşmezse header hiç eklenmez ve tarayıcı yanıtı JS'e açmaz. Genel/
+salt-okunur uç noktalar için `"*"` makul bir varsayılandır çünkü
+`Authorization` header'ı çerezler gibi zımnen taşınmaz (CSRF benzeri
+bir risk oluşturmaz); favoriler/alerts gibi token gerektiren uç
+noktalara özel bir frontend'den erişiyorsanız whitelist modunu
+kullanmanız önerilir.
+
 > **Headers:** Sunucu, tüm API yanıtlarına otomatik olarak `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` ve `Content-Security-Policy` güvenlik başlıklarını ekler.
 
 ### 5. Rate Limit

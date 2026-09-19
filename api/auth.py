@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 import threading
+import uuid
 from typing import Any
 
 from flask import jsonify, request
@@ -26,7 +27,13 @@ class ListeYetkiService:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def create(self, liste_id: str | None = None) -> dict[str, str]:
-        liste_id = liste_id or secrets.token_urlsafe(18)
+        # liste_id verilmezse sunucu tarafında standart UUID v4 üretilir
+        # (122 bit rastgelelik) — tahmin edilmesi hesaplama açısından
+        # imkansızdır. Yine de erişim kontrolü liste_id'ye değil, ayrıca
+        # üretilen ve yalnızca hash'i saklanan manage_token/read_token'a
+        # dayanır (aşağıda) — liste_id tahmin edilse bile token olmadan
+        # hiçbir işlem yapılamaz.
+        liste_id = liste_id or str(uuid.uuid4())
         if not self.liste_id_validator(liste_id):
             raise ValueError("liste_id yalnızca harf, rakam, '-' ve '_' içerebilir (3-64 karakter).")
         manage_token = secrets.token_urlsafe(32)
