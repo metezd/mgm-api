@@ -7,10 +7,10 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    environment: pypi # TestPyPI'da Trusted Publisher kurarken Environment kısmına 'pypi' yazdıysan böyle kalmalı
+    environment: pypi
     permissions:
-      id-token: write  # OIDC kimlik doğrulaması için
-      contents: read   # actions/checkout'un kodu okuyabilmesi için zorunlu
+      id-token: write
+      contents: read
 
     steps:
       - name: Repoyu Klonla
