@@ -7,9 +7,10 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: pypi # TestPyPI'da Trusted Publisher kurarken Environment kısmına 'pypi' yazdıysan böyle kalmalı
     permissions:
-      id-token: write  #
+      id-token: write  # OIDC kimlik doğrulaması için
+      contents: read   # actions/checkout'un kodu okuyabilmesi için zorunlu
 
     steps:
       - name: Repoyu Klonla
@@ -26,5 +27,7 @@ jobs:
       - name: Paketi Derle (sdist + wheel)
         run: python -m build
 
-      - name: PyPI'a Yükle
+      - name: TestPyPI'a Yükle
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
