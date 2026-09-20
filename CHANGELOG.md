@@ -6,6 +6,16 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Test coverage artırıldı (`mgm_client/_kalite_deniz.py` %12→%95,
+  `mgm_client/_harita.py` %21→%98, `mgm_client/_don_gun_ay.py`
+  %60→%100). 39 yeni test: hava_kalitesi/polen_indeksi/deniz_durumu
+  İBB+Piri Reis+Open-Meteo kaynak birleştirme ve fallback yolları,
+  harita_geojson'ın 81 il paralel birleştirmesi ve hatada null'a
+  düşmesi, don_kiragi_riski eşik sınıflandırması, gün doğumu/batımı ve
+  ay evresi hesaplamaları. Genel proje coverage'ı %70→%80. Sırada:
+  `app.py` (%63), `api/auth.py`/`api/middleware.py` (%73-74).
+  246/246 test geçiyor.
+
 - **Güvenlik — CORS whitelist:** `APP_CORS_ALLOW_ORIGIN`, `"*"`
   (varsayılan, değişmedi) yerine virgülle ayrılmış bir origin
   whitelist'i (`https://a.com,https://b.com`) kabul edecek şekilde

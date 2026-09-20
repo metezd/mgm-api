@@ -1,3 +1,5 @@
+import datetime as _dt
+import json
 import threading
 import time
 import unittest
@@ -1799,6 +1801,615 @@ class TestAkilliOzet(unittest.TestCase):
         self.assertIn("yeterli veri yok", sonuc["ozet"])
         self.assertEqual(sonuc["anahtarNoktalar"], [])
         self.assertEqual(sonuc["trend"], {"yon": "bilinmiyor", "farkC": None})
+
+
+class _HtmlDummyResponse:
+    """Piri Reis sayfası gibi JSON değil HTML dönen uç noktalar için
+    sahte yanıt (resp.text kullanılır, resp.json() değil)."""
+
+    def __init__(self, text: str):
+        self.status_code = 200
+        self.text = text
+
+    def raise_for_status(self):
+        return None
+
+
+def _piri_reis_html(istasyonlar_verisi: Any) -> str:
+    yuk = {"props": {"pageProps": {"data": istasyonlar_verisi}}}
+    return (
+        '<html><body><script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps(yuk)
+        + "</script></body></html>"
+    )
+
+
+class _KaliteDenizUrlSession:
+    """`_UrlBazliSession`in HTML (Piri Reis) yanıtlarını da destekleyen
+    hali: davranış bir `str` ise `_HtmlDummyResponse`, değilse (dict/
+    list) `_DummyResponse` (JSON) olarak sarılır."""
+
+    def __init__(self, davranislar: dict[str, Any]):
+        self.davranislar = davranislar
+        self.calls: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        for parca, davranis in self.davranislar.items():
+            if parca in url:
+                if isinstance(davranis, Exception):
+                    raise davranis
+                if isinstance(davranis, str):
+                    return _HtmlDummyResponse(davranis)
+                return _DummyResponse(davranis)
+        raise AssertionError(f"Beklenmeyen URL çağrıldı: {url}")
+
+
+def _open_meteo_hk_yuku(pm10=30.0, pm25=15.0, no2=8.0, uv=4.5, avrupa_hki=25):
+    return {
+        "current": {
+            "pm10": pm10,
+            "pm2_5": pm25,
+            "nitrogen_dioxide": no2,
+            "uv_index": uv,
+            "european_aqi": avrupa_hki,
+            "time": "2026-09-20T10:00",
+        }
+    }
+
+
+def _ibb_istasyon_listesi_yuku():
+    return [
+        {"Id": "TR001", "Name": "Kadıköy İstasyonu", "Adress": "Kadıköy", "Location": "40.98, 29.03"},
+        {"Id": "TR002", "Name": "Uzak İstasyon", "Location": "39.0, 27.0"},
+        {"Id": "TR003", "Name": "Bozuk Konum", "Location": "tek-parca"},
+        {"Id": "TR004", "Name": "Geçersiz Sayı", "Location": "abc, def"},
+    ]
+
+
+def _ibb_olcum_yuku(pm10=45.2, no2=12.1):
+    return [
+        {
+            "ReadTime": "2026-09-20 09:00:00",
+            "Concentration": {"PM10": pm10, "NO2": no2, "SO2": 5.0, "O3": 30.0, "CO": 0.5},
+            "AQI": {"AQI": 55},
+        },
+        {
+            "ReadTime": "2026-09-20 10:00:00",  # en güncel -> bu seçilmeli
+            "Concentration": {"PM10": pm10 + 1, "NO2": no2 + 1},
+            "AQI": {},
+        },
+    ]
+
+
+class TestHavaKalitesi(unittest.TestCase):
+    """hava_kalitesi(): İBB (öncelik, yalnızca İstanbul) + Open-Meteo
+    (PM2.5/UV/fallback) kaynak birleştirme mantığı."""
+
+    def test_ibb_kapsami_disindaki_konumda_tamamen_open_meteo_kullanilir(self):
+        session = _KaliteDenizUrlSession(
+            {
+                "GetAQIStations": _ibb_istasyon_listesi_yuku(),
+                "air-quality-api.open-meteo.com": _open_meteo_hk_yuku(),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        # İBB istasyonlarının hepsinden çok uzak bir koordinat (Van civarı)
+        sonuc = client.hava_kalitesi(38.5, 43.4)
+
+        self.assertEqual(sonuc["kaynaklar"]["pm10"], "open-meteo")
+        self.assertEqual(sonuc["kaynaklar"]["no2"], "open-meteo")
+        self.assertIsNone(sonuc["istasyon"])
+        self.assertEqual(sonuc["pm10"], 30.0)
+
+    def test_ibb_istasyonu_bulununca_pm10_ve_no2_ibbden_gelir(self):
+        session = _KaliteDenizUrlSession(
+            {
+                "GetAQIStations": _ibb_istasyon_listesi_yuku(),
+                "GetAQIByStationId": _ibb_olcum_yuku(pm10=45.2, no2=12.1),
+                "air-quality-api.open-meteo.com": _open_meteo_hk_yuku(),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_kalitesi(40.98, 29.03)  # Kadıköy istasyonuna yakın
+
+        self.assertEqual(sonuc["kaynaklar"]["pm10"], "ibb")
+        self.assertEqual(sonuc["kaynaklar"]["no2"], "ibb")
+        self.assertEqual(sonuc["pm10"], 46.2)  # en güncel kayıttan (10:00)
+        # PM2.5/UV her zaman Open-Meteo'dan tamamlanır
+        self.assertEqual(sonuc["pm25"], 15.0)
+        self.assertEqual(sonuc["kaynaklar"]["pm25"], "open-meteo")
+        self.assertEqual(sonuc["istasyon"]["ad"], "Kadıköy İstasyonu")
+
+    def test_ibb_olcumu_basarisiz_olunca_open_meteoya_dusulur(self):
+        session = _KaliteDenizUrlSession(
+            {
+                "GetAQIStations": _ibb_istasyon_listesi_yuku(),
+                "GetAQIByStationId": requests.ConnectionError("ibb çöktü"),
+                "air-quality-api.open-meteo.com": _open_meteo_hk_yuku(),
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.hava_kalitesi(40.98, 29.03)
+
+        self.assertEqual(sonuc["kaynaklar"]["pm10"], "open-meteo")
+        self.assertIsNone(sonuc["istasyon"])
+
+    def test_open_meteo_basarisiz_olunca_hata_firlatilir(self):
+        session = _KaliteDenizUrlSession(
+            {"air-quality-api.open-meteo.com": requests.ConnectionError("open-meteo çöktü")}
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.hava_kalitesi(40.98, 29.03)
+
+
+class TestPolenIndeksi(unittest.TestCase):
+    """polen_indeksi(): CAMS Avrupa modelinden tür bazlı seviye
+    sınıflandırması ve baskın tür/genel risk hesaplaması."""
+
+    def test_normal_yanitta_seviyeler_ve_baskin_tur_dogru_hesaplanir(self):
+        yuk = {
+            "current": {
+                "grass_pollen": 10,     # dusuk(20) altında -> Düşük
+                "birch_pollen": 200,    # orta(90) üstü, yuksek(500) altı -> Yüksek
+                "alder_pollen": 0,      # -> Yok
+                "mugwort_pollen": None, # -> Veri Yok
+                "olive_pollen": 5,
+                "ragweed_pollen": 5,
+                "time": "2026-09-20T10:00",
+            }
+        }
+        session = _KaliteDenizUrlSession({"air-quality-api.open-meteo.com": yuk})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.polen_indeksi(41.0, 29.0)
+
+        self.assertEqual(sonuc["turler"]["grass_pollen"]["seviye"], "Düşük")
+        self.assertEqual(sonuc["turler"]["birch_pollen"]["seviye"], "Yüksek")
+        self.assertEqual(sonuc["turler"]["alder_pollen"]["seviye"], "Yok")
+        self.assertEqual(sonuc["turler"]["mugwort_pollen"]["seviye"], "Veri Yok")
+        self.assertEqual(sonuc["baskinTur"], "huş")  # en yüksek seviyeli tür
+        self.assertEqual(sonuc["genelRiskSeviyesi"], "Yüksek")
+
+    def test_tum_turler_veri_yoksa_genel_risk_veri_yok_doner(self):
+        turler = (
+            "grass_pollen", "birch_pollen", "alder_pollen",
+            "mugwort_pollen", "olive_pollen", "ragweed_pollen",
+        )
+        yuk = {"current": dict.fromkeys(turler) | {"time": "2026-09-20T10:00"}}
+        session = _KaliteDenizUrlSession({"air-quality-api.open-meteo.com": yuk})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.polen_indeksi(41.0, 29.0)
+
+        self.assertIsNone(sonuc["baskinTur"])
+        self.assertEqual(sonuc["genelRiskSeviyesi"], "Veri Yok")
+
+    def test_open_meteo_basarisiz_olunca_hata_firlatilir(self):
+        session = _KaliteDenizUrlSession(
+            {"air-quality-api.open-meteo.com": requests.ConnectionError("çöktü")}
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.polen_indeksi(41.0, 29.0)
+
+
+class TestDenizDurumu(unittest.TestCase):
+    """deniz_durumu(): Piri Reis (öncelikli, gerçek istasyon) + Open-Meteo
+    (dalga + fallback deniz suyu sıcaklığı) kaynak birleştirme mantığı."""
+
+    _OPEN_METEO_DENIZ_YUKU: ClassVar[dict[str, Any]] = {
+        "current": {
+            "wave_height": 0.8,
+            "wave_period": 4.2,
+            "wave_direction": 220,
+            "sea_surface_temperature": 22.1,
+            "time": "2026-09-20T10:00",
+        }
+    }
+
+    def test_piri_reis_istasyonu_bulununca_deniz_sicakligi_piri_reisden_gelir(self):
+        piri_reis_verisi = [
+            {
+                "istNo": "1", "istAd": "Kadıköy Açıkları", "il": "İstanbul", "ilce": "Kadıköy",
+                "enlem": "40.98", "boylam": "29.03", "denizSicaklik": 23.5,
+                "denizVeriZamani": "2026-09-20T09:30",
+            }
+        ]
+        session = _KaliteDenizUrlSession(
+            {
+                "pirireis.mgm.gov.tr": _piri_reis_html(piri_reis_verisi),
+                "marine-api.open-meteo.com": self._OPEN_METEO_DENIZ_YUKU,
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.deniz_durumu(40.98, 29.03)
+
+        self.assertEqual(sonuc["denizSuyuSicakligi"], 23.5)
+        self.assertEqual(sonuc["kaynaklar"]["denizSuyuSicakligi"], "piri-reis")
+        self.assertEqual(sonuc["kaynaklar"]["dalga"], "open-meteo")
+        self.assertEqual(sonuc["dalgaYuksekligi"], 0.8)
+        self.assertFalse(sonuc["kapsamDisi"])
+        self.assertEqual(sonuc["istasyon"]["il"], "İstanbul")
+
+    def test_piri_reis_sayfa_yapisi_degisince_open_meteoya_dusulur(self):
+        session = _KaliteDenizUrlSession(
+            {
+                "pirireis.mgm.gov.tr": "<html><body>beklenmedik içerik</body></html>",
+                "marine-api.open-meteo.com": self._OPEN_METEO_DENIZ_YUKU,
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.deniz_durumu(40.98, 29.03)
+
+        self.assertEqual(sonuc["denizSuyuSicakligi"], 22.1)  # open-meteo değeri
+        self.assertEqual(sonuc["kaynaklar"]["denizSuyuSicakligi"], "open-meteo")
+        self.assertIsNone(sonuc["istasyon"])
+
+    def test_ikisi_de_kapsam_disiysa_kapsam_disi_true_doner(self):
+        bos_yuk = {
+            "current": {
+                "wave_height": None, "wave_period": None, "wave_direction": None,
+                "sea_surface_temperature": None, "time": "2026-09-20T10:00",
+            }
+        }
+        session = _KaliteDenizUrlSession(
+            {
+                "pirireis.mgm.gov.tr": "<html><body>beklenmedik içerik</body></html>",
+                "marine-api.open-meteo.com": bos_yuk,
+            }
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.deniz_durumu(38.9, 35.2)  # Kayseri - karasal
+
+        self.assertTrue(sonuc["kapsamDisi"])
+        self.assertIsNotNone(sonuc["aciklama"])
+
+    def test_open_meteo_marine_basarisiz_olunca_hata_firlatilir(self):
+        session = _KaliteDenizUrlSession(
+            {"marine-api.open-meteo.com": requests.ConnectionError("çöktü")}
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.deniz_durumu(40.98, 29.03)
+
+
+class TestIbbVePiriReisYardimcilari(unittest.TestCase):
+    """İBB istasyon listesi/en-yakın-istasyon ve Piri Reis sayfa ayrıştırma
+    yardımcı fonksiyonlarının doğrudan testleri (hata/kenar durumları)."""
+
+    def test_ibb_istasyon_listesi_bozuk_kayitlari_atlar(self):
+        session = _KaliteDenizUrlSession({"GetAQIStations": _ibb_istasyon_listesi_yuku()})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        istasyonlar = client._ibb_istasyonlari()
+
+        # 4 kayıttan yalnızca 2'si geçerli (tek parçalı ve abc,def olanlar atlanır)
+        self.assertEqual(len(istasyonlar), 2)
+        self.assertEqual(istasyonlar[0]["enlem"], 40.98)
+
+    def test_ibb_istasyon_listesi_tamamen_bozuksa_hata_firlatir(self):
+        session = _KaliteDenizUrlSession({"GetAQIStations": [{"Location": "tek-parca"}]})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client._ibb_istasyonlari()
+
+    def test_ibb_en_yakin_istasyon_mesafe_disindaysa_none_doner(self):
+        session = _KaliteDenizUrlSession({"GetAQIStations": _ibb_istasyon_listesi_yuku()})
+        client = MGMWeather(
+            cache_ttl_seconds=0, timeout=1, retry_total=0, ibb_max_mesafe_km=1.0
+        )
+        client.session = session
+
+        # İstasyonlardan çok uzak bir koordinat
+        sonuc = client._ibb_en_yakin_istasyon(38.5, 43.4)
+        self.assertIsNone(sonuc)
+
+    def test_piri_reis_next_data_bulunamazsa_hata_firlatir(self):
+        session = _KaliteDenizUrlSession(
+            {"pirireis.mgm.gov.tr": "<html><body>script yok</body></html>"}
+        )
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client._piri_reis_deniz_istasyonlari()
+
+    def test_piri_reis_next_data_bozuk_jsonsa_hata_firlatir(self):
+        bozuk_html = (
+            '<html><body><script id="__NEXT_DATA__" type="application/json">'
+            "{bozuk-json"
+            "</script></body></html>"
+        )
+        session = _KaliteDenizUrlSession({"pirireis.mgm.gov.tr": bozuk_html})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client._piri_reis_deniz_istasyonlari()
+
+    def test_piri_reis_denizsicakligi_olmayan_kayitlar_atlanir(self):
+        veri = [
+            {"istNo": "1", "enlem": "40.0", "boylam": "29.0", "denizSicaklik": None},
+            {"istNo": "2", "enlem": "40.1", "boylam": "29.1", "denizSicaklik": 20.0},
+        ]
+        session = _KaliteDenizUrlSession({"pirireis.mgm.gov.tr": _piri_reis_html(veri)})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        istasyonlar = client._piri_reis_deniz_istasyonlari()
+        self.assertEqual(len(istasyonlar), 1)
+        self.assertEqual(istasyonlar[0]["istasyonId"], "2")
+
+
+class TestHaritaGeojson(unittest.TestCase):
+    """il_sinirlari_geojson() + harita_geojson(): GeoJSON sınır verisi +
+    81 il için paralel sıcaklık birleştirme, hatada null değerlere
+    düşme, çözülemeyen il adlarında da feature'ın korunması."""
+
+    def test_il_sinirlari_geojson_basarili(self):
+        yuk = {
+            "type": "FeatureCollection",
+            "features": [{"properties": {"name": "İstanbul"}, "geometry": {}}],
+        }
+        session = _CountingSession(yuk)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        self.assertEqual(client.il_sinirlari_geojson(), yuk)
+
+    def test_il_sinirlari_geojson_beklenmeyen_formatta_hata_firlatir(self):
+        session = _CountingSession({"type": "Yanlış", "features": []})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.il_sinirlari_geojson()
+
+    def test_il_sinirlari_geojson_bos_features_hata_firlatir(self):
+        session = _CountingSession({"type": "FeatureCollection", "features": []})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.il_sinirlari_geojson()
+
+    def test_il_sinirlari_geojson_istek_hatasinda_hata_firlatir(self):
+        session = _AyarlanabilirSession(basarisiz_sayisi=99, payload={})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.il_sinirlari_geojson()
+
+    def test_harita_geojson_basarili_ve_hatali_illeri_birlestirir(self):
+        sinirlar = {
+            "type": "FeatureCollection",
+            "features": [
+                {"properties": {"name": "İstanbul"}, "geometry": {"type": "Point"}},
+                {"properties": {"name": "Ankara"}, "geometry": {"type": "Point"}},
+                {"properties": {"name": "Bilinmeyen Hayali İl"}, "geometry": {}},
+            ],
+        }
+
+        def sahte_ilce_istasyonu(il_adi, ilce=None):
+            if il_adi == "İstanbul":
+                raise MGMWeatherError("istasyon bulunamadı (test)")
+            return {"istasyonId": 1, "enlem": 40.0, "boylam": 30.0}
+
+        def sahte_guncel_durum(istasyon_id, enlem=None, boylam=None):
+            return {"sicaklik": 22.5, "durum": "Açık", "olcumZamani": "2026-09-20T10:00"}
+
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        with (
+            patch.object(MGMWeather, "il_sinirlari_geojson", return_value=sinirlar),
+            patch.object(MGMWeather, "ilce_istasyonu", side_effect=sahte_ilce_istasyonu),
+            patch.object(MGMWeather, "guncel_durum_yedekli", side_effect=sahte_guncel_durum),
+        ):
+            sonuc = client.harita_geojson()
+
+        self.assertEqual(sonuc["type"], "FeatureCollection")
+        by_name = {f["properties"]["name"]: f["properties"] for f in sonuc["features"]}
+
+        # İstanbul: ilce_istasyonu hata verdi -> null değerlerle korunur
+        self.assertIsNone(by_name["İstanbul"]["sicaklik"])
+
+        # Ankara: başarılı -> sicaklik/durum dolu
+        self.assertEqual(by_name["Ankara"]["sicaklik"], 22.5)
+        self.assertEqual(by_name["Ankara"]["durum"], "Açık")
+
+        # Çözülemeyen il adı: yine de feature listede kalır, il=ham ad, sicaklik null
+        self.assertIn("Bilinmeyen Hayali İl", by_name)
+        self.assertIsNone(by_name["Bilinmeyen Hayali İl"]["sicaklik"])
+
+    def test_geojson_il_adini_coz_alias_sozlugunden_bulur(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        # GEOJSON_IL_ALIASLARI en az bir gerçek alias içermeli; boşsa da
+        # fuzzy-match üzerinden aynı isim çözülür (aşağıdaki genel test).
+        sonuc = client._geojson_il_adini_coz("İstanbul")
+        self.assertEqual(sonuc, "İstanbul")
+
+    def test_geojson_il_adini_coz_taninmayan_isimde_none_donebilir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        sonuc = client._geojson_il_adini_coz("Tamamen Alakasız Rastgele Metin 12345")
+        self.assertIsNone(sonuc)
+
+
+class TestDonKiragiRiski(unittest.TestCase):
+    """don_kiragi_riski(): günlük en düşük sıcaklığa göre risk
+    sınıflandırması, kırağı oluşum koşulu tespiti, genel risk seviyesi."""
+
+    def _client(self):
+        return MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+
+    def test_esik_sinirlarina_gore_seviyeler_dogru_atanir(self):
+        gunler = [
+            {"tarih": "g1", "enDusuk": -15, "enYuksekNem": 30, "ruzgarHizi": 20},  # Çok Kuvvetli
+            {"tarih": "g2", "enDusuk": -7, "enYuksekNem": 30, "ruzgarHizi": 20},   # Kuvvetli
+            {"tarih": "g3", "enDusuk": -3, "enYuksekNem": 30, "ruzgarHizi": 20},   # Orta
+            {"tarih": "g4", "enDusuk": -1, "enYuksekNem": 30, "ruzgarHizi": 20},   # Hafif
+            {"tarih": "g5", "enDusuk": 2, "enYuksekNem": 30, "ruzgarHizi": 20},    # Kırağı Riski
+            {"tarih": "g6", "enDusuk": 10, "enYuksekNem": 30, "ruzgarHizi": 20},   # Risk Yok
+        ]
+        client = self._client()
+        with patch.object(MGMWeather, "gunluk_tahmin", return_value=gunler):
+            sonuc = client.don_kiragi_riski(12345, il="Erzurum")
+
+        beklenen = [
+            "Çok Kuvvetli Don", "Kuvvetli Don", "Orta Don",
+            "Hafif Don", "Kırağı Riski", "Risk Yok",
+        ]
+        self.assertEqual([g["seviye"] for g in sonuc["gunler"]], beklenen)
+        self.assertEqual(sonuc["genelRiskSeviyesi"], "Çok Kuvvetli Don")  # en yüksek risk
+        self.assertEqual(sonuc["il"], "Erzurum")
+
+    def test_endusuk_yoksa_bilinmiyor_seviyesi_atanir(self):
+        gunler = [{"tarih": "g1", "enDusuk": None, "enYuksekNem": None, "ruzgarHizi": None}]
+        client = self._client()
+        with patch.object(MGMWeather, "gunluk_tahmin", return_value=gunler):
+            sonuc = client.don_kiragi_riski(12345)
+
+        self.assertEqual(sonuc["gunler"][0]["seviye"], "Bilinmiyor")
+        self.assertFalse(sonuc["gunler"][0]["kiragiKosuluUygun"])
+
+    def test_dusuk_ruzgar_yuksek_nem_kiragi_kosulu_uygun_isaretlenir(self):
+        gunler = [{"tarih": "g1", "enDusuk": 2.0, "enYuksekNem": 75, "ruzgarHizi": 5}]
+        client = self._client()
+        with patch.object(MGMWeather, "gunluk_tahmin", return_value=gunler):
+            sonuc = client.don_kiragi_riski(12345)
+
+        self.assertTrue(sonuc["gunler"][0]["kiragiKosuluUygun"])
+
+    def test_yuksek_ruzgar_kiragi_kosulunu_gecersiz_kilar(self):
+        gunler = [{"tarih": "g1", "enDusuk": 2.0, "enYuksekNem": 75, "ruzgarHizi": 25}]
+        client = self._client()
+        with patch.object(MGMWeather, "gunluk_tahmin", return_value=gunler):
+            sonuc = client.don_kiragi_riski(12345)
+
+        self.assertFalse(sonuc["gunler"][0]["kiragiKosuluUygun"])
+
+    def test_bos_gun_listesi_risk_yok_doner(self):
+        client = self._client()
+        with patch.object(MGMWeather, "gunluk_tahmin", return_value=[]):
+            sonuc = client.don_kiragi_riski(12345)
+
+        self.assertEqual(sonuc["gunler"], [])
+        self.assertEqual(sonuc["genelRiskSeviyesi"], "Risk Yok")
+
+
+class TestGunDogumuBatimi(unittest.TestCase):
+    def test_basarili_yanit_saat_dakika_formatinda_doner(self):
+        yuk = {
+            "results": {
+                "sunrise": "2026-09-20T03:30:00+00:00",
+                "sunset": "2026-09-20T16:45:00+00:00",
+            }
+        }
+        session = _CountingSession(yuk)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        sonuc = client.gun_dogumu_batimi(41.0, 29.0)
+
+        self.assertEqual(sonuc["gunDogumu"], "06:30")  # UTC+3
+        self.assertEqual(sonuc["gunBatimi"], "19:45")
+
+    def test_istek_hatasinda_hata_firlatir(self):
+        session = _AyarlanabilirSession(basarisiz_sayisi=99, payload={})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.gun_dogumu_batimi(41.0, 29.0)
+
+    def test_beklenmeyen_json_yapisinda_hata_firlatir(self):
+        session = _CountingSession({"beklenmeyen": "yapı"})
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        client.session = session
+
+        with self.assertRaises(MGMWeatherError):
+            client.gun_dogumu_batimi(41.0, 29.0)
+
+
+class TestAyEvresi(unittest.TestCase):
+    def test_bilinen_dolunay_tarihinde_dolunay_hesaplanir(self):
+        # 2026-08-28 civarı bilinen bir dolunay tarihi (astronomik referans)
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        sonuc = client.ay_evresi(_dt.date(2026, 8, 28))
+
+        self.assertEqual(sonuc["evreAdi"], "Dolunay")
+        self.assertGreater(sonuc["aydinlanmaOrani"], 0.9)
+
+    def test_tarih_verilmezse_bugunun_evresi_hesaplanir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        sonuc = client.ay_evresi()
+
+        self.assertIn(sonuc["evreAdi"], client._AY_EVRE_ADLARI)
+        self.assertGreaterEqual(sonuc["yasGunu"], 0)
+        self.assertLess(sonuc["yasGunu"], 30)
+
+    def test_donus_degerleri_beklenen_araliktadir(self):
+        client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+        sonuc = client.ay_evresi(_dt.date(2026, 1, 1))
+
+        self.assertGreaterEqual(sonuc["aydinlanmaOrani"], 0.0)
+        self.assertLessEqual(sonuc["aydinlanmaOrani"], 1.0)
+        self.assertIsInstance(sonuc["buyuyorMu"], bool)
+
+
+class TestHaversineVeYardimciHesaplamalar(unittest.TestCase):
+    """_haversine_km, _polen_seviyesi, _sozlukten_kirletici_deger gibi
+    saf yardımcı fonksiyonların doğrudan birim testleri."""
+
+    def setUp(self):
+        self.client = MGMWeather(cache_ttl_seconds=0, timeout=1, retry_total=0)
+
+    def test_haversine_ayni_nokta_sifir_doner(self):
+        self.assertAlmostEqual(self.client._haversine_km(41.0, 29.0, 41.0, 29.0), 0.0, places=6)
+
+    def test_haversine_bilinen_mesafeye_yakin_sonuc_verir(self):
+        # İstanbul (Kadıköy) - Ankara (Kızılay) yaklaşık 350-360 km
+        mesafe = self.client._haversine_km(40.98, 29.03, 39.92, 32.85)
+        self.assertGreater(mesafe, 320)
+        self.assertLess(mesafe, 380)
+
+    def test_polen_seviyesi_esik_sinirlari(self):
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", None), "Veri Yok")
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", 0), "Yok")
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", 15), "Düşük")
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", 35), "Orta")
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", 100), "Yüksek")
+        self.assertEqual(self.client._polen_seviyesi("grass_pollen", 500), "Çok Yüksek")
+
+    def test_sozlukten_kirletici_deger_buyuk_kucuk_harf_duyarsiz(self):
+        veri = {"pm10": "45.2", "NO2": "bozuk-sayi"}
+        self.assertEqual(self.client._sozlukten_kirletici_deger(veri, "PM10"), 45.2)
+        self.assertIsNone(self.client._sozlukten_kirletici_deger(veri, "NO2"))
+        self.assertIsNone(self.client._sozlukten_kirletici_deger(veri, "OLMAYAN"))
 
 
 if __name__ == "__main__":
