@@ -1,10 +1,86 @@
+import json
+import os
 import time
 import unittest
 import uuid
 from unittest.mock import patch
 
 import app as app_module
+from app import AlertHatasi, FavoriHatasi
 from mgm_client import MGMWeatherError
+
+
+class _SahteRedisClient:
+    """favoriler/alerts'ın kullandığı redis-py metodlarının (hset,
+    hkeys, hdel, hgetall, sadd, srem, scard, smembers, hmget, expire)
+    küçük bir alt kümesini taklit eden bellek içi sahte istemci."""
+
+    def __init__(self):
+        self.store: dict[str, dict] = {}
+        self.expire_calls: list[tuple[str, int]] = []
+
+    def hset(self, key, field=None, value=None, mapping=None):
+        kayit = self.store.setdefault(key, {})
+        if mapping:
+            for k, v in mapping.items():
+                kayit[k.encode() if isinstance(k, str) else k] = (
+                    v.encode() if isinstance(v, str) else v
+                )
+        else:
+            kayit[field.encode() if isinstance(field, str) else field] = (
+                value.encode() if isinstance(value, str) else value
+            )
+
+    def hkeys(self, key):
+        return list(self.store.get(key, {}).keys())
+
+    def hdel(self, key, field):
+        kayit = self.store.get(key, {})
+        field_b = field.encode() if isinstance(field, str) else field
+        if field_b in kayit:
+            del kayit[field_b]
+            return 1
+        return 0
+
+    def hgetall(self, key):
+        return self.store.get(key, {})
+
+    def hmget(self, key, fields):
+        kayit = self.store.get(key, {})
+        return [kayit.get(f.encode() if isinstance(f, str) else f) for f in fields]
+
+    def sadd(self, key, member):
+        self.store.setdefault(key, set()).add(member)
+
+    def srem(self, key, member):
+        kayit = self.store.get(key, set())
+        if member in kayit:
+            kayit.discard(member)
+            return 1
+        return 0
+
+    def scard(self, key):
+        return len(self.store.get(key, set()))
+
+    def smembers(self, key):
+        return set(self.store.get(key, set()))
+
+    def expire(self, key, ttl):
+        self.expire_calls.append((key, ttl))
+
+
+class _PatlayanRedisClient:
+    """Her işlemde hata fırlatan sahte Redis — bellek fallback'ini
+    tetiklemek için kullanılır."""
+
+    class RedisHatasi(Exception):
+        pass
+
+    def __getattr__(self, _name):
+        def _patla(*_args, **_kwargs):
+            raise self.RedisHatasi("redis çöktü")
+
+        return _patla
 
 
 class FakeMGM:
@@ -34,7 +110,13 @@ class FakeMGM:
         return dict(self.circuit_breaker_durum)
 
     def ilce_istasyonu(self, il: str, ilce: str | None = None):
-        return {"il": il, "ilce": ilce or "Bakırköy", "merkezId": 93401}
+        if il == "istasyonsuz-il":
+            return {"il": il, "ilce": ilce or "Bakırköy"}  # istasyonId/merkezId yok
+        istasyon = {"il": il, "ilce": ilce or "Bakırköy", "merkezId": 93401}
+        if il != "konumsuz-il":
+            istasyon["enlem"] = 40.98
+            istasyon["boylam"] = 29.03
+        return istasyon
 
     def hava_durumu(self, il: str, ilce: str | None = None):
         return {
@@ -81,6 +163,71 @@ class FakeMGM:
         if il == "coken-il":
             raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
         return {"ham": [], "not": "test notu"}
+
+    def gunluk_tahmin(self, istasyon_id: int | str):
+        if istasyon_id == "coken-istasyon":
+            raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
+        return [{"tarih": "2026-08-14", "enDusuk": 18, "enYuksek": 27, "durum": "Açık"}]
+
+    def hava_kalitesi(self, enlem: float, boylam: float):
+        return {"pm10": 30.0, "pm25": 15.0, "uvIndeksi": 4.5, "kaynaklar": {"pm10": "open-meteo"}}
+
+    def gun_dogumu_batimi(self, enlem: float, boylam: float):
+        return {"gunDogumu": "06:30", "gunBatimi": "19:45"}
+
+    def ay_evresi(self, tarih=None):
+        return {"evreAdi": "Dolunay", "aydinlanmaOrani": 0.98, "yasGunu": 14.2}
+
+    def polen_indeksi(self, enlem: float, boylam: float):
+        return {"turler": {}, "baskinTur": None, "genelRiskSeviyesi": "Veri Yok"}
+
+    def deniz_durumu(self, enlem: float, boylam: float):
+        return {
+            "denizSuyuSicakligi": 22.5,
+            "dalgaYuksekligi": 0.6,
+            "kapsamDisi": False,
+            "kaynaklar": {"denizSuyuSicakligi": "open-meteo", "dalga": "open-meteo"},
+        }
+
+    def harita_geojson(self):
+        if self.should_fail_health:
+            raise MGMWeatherError("MGM servisine bağlanılamadı")
+        return {
+            "type": "FeatureCollection",
+            "features": [{"properties": {"name": "İstanbul", "sicaklik": 22.5}, "geometry": {}}],
+        }
+
+    def don_kiragi_riski(self, istasyon_id: int | str, il: str = "", ilce: str | None = None):
+        return {
+            "il": il, "ilce": ilce,
+            "gunler": [{"tarih": "2026-08-14", "seviye": "Risk Yok"}],
+            "genelRiskSeviyesi": "Risk Yok",
+        }
+
+    def akilli_ozet(self, il: str, ilce: str | None = None):
+        if il == "coken-il":
+            raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
+        return {
+            "il": il, "ilce": ilce, "ozet": f"{il} için şu an hava açık ve sıcaklık 22°C.",
+            "anahtarNoktalar": [], "uyarilar": [], "trend": {"yon": "sabit", "farkC": 0.0},
+        }
+
+    def en_dusuk_sicakliklar(self, tarih=None):
+        if tarih == "2099-01-01":
+            raise MGMWeatherError("MGM'ye ulaşılamadı (simülasyon).")
+        return {"tarih": tarih or "2026-08-14", "istasyonlar": []}
+
+    def en_yuksek_sicakliklar(self, tarih=None):
+        return {"tarih": tarih or "2026-08-14", "istasyonlar": []}
+
+    def toplam_yagislar(self, tarih=None):
+        return {"tarih": tarih or "2026-08-14", "istasyonlar": []}
+
+    def kar_kalinliklari(self):
+        return {"istasyonlar": []}
+
+    def son_gozlemler(self):
+        return {"istasyonlar": []}
 
     def hava_durumu_konum(self, enlem: float, boylam: float):
         if enlem == 77.0:  # test tetikleyicisi, geçerli aralıkta (-90..90)
@@ -583,7 +730,7 @@ class TestListeYetkilendirme(unittest.TestCase):
     def test_listeid_verilmezse_sunucu_uuid_v4_uretir(self):
         # Güvenlik: liste_id tahmin edilebilir olmamalı. Client listeId
         # göndermezse sunucu standart, kriptografik olarak güvenli bir
-        # UUID v4 üretir
+        # UUID v4 üretir (client-taraflı, öngörülebilir bir kimlik değil).
         response = self.client.post("/favoriler", json={})
         self.assertEqual(response.status_code, 201)
         uretilen_id = response.get_json()["veri"]["listeId"]
@@ -598,8 +745,8 @@ class TestListeYetkilendirme(unittest.TestCase):
 
     def test_client_kendi_listeidsini_hala_secebilir(self):
         # Geriye dönük uyumluluk: özel/akılda kalır bir liste_id isteyen
-        # client'lar hâlâ kendi ID'sini verebilir. güvenlik sınırı
-        # liste_id değil manage/read token
+        # client'lar hâlâ kendi ID'sini verebilir — güvenlik sınırı
+        # liste_id değil (aşağıda ayrıca doğrulanan) manage/read token'dır.
         data = self._liste_olustur()
         self.assertEqual(data["listeId"], "yetkili-liste")
 
@@ -698,7 +845,7 @@ class TestListeYetkilendirme(unittest.TestCase):
 
     def test_favoriler_toplu_ile_ayni_paylasilan_havuzu_kullanir(self):
         # /favoriler/<liste_id> de /toplu ile aynı paylaşılan
-        # _TOPLU_HAVUZ'u kullanır.
+        # _TOPLU_HAVUZ'u kullanır (ayrı bir ThreadPoolExecutor açmaz).
         # Bu sınıf varsayılan olarak gerçek mgm istemcisini kullanıyor;
         # burada gerçek ağ çağrısından kaçınmak için geçici olarak
         # FakeMGM'e geçiyoruz.
@@ -719,6 +866,379 @@ class TestListeYetkilendirme(unittest.TestCase):
             self.assertFalse(app_module._TOPLU_HAVUZ._shutdown)
         finally:
             app_module.mgm = original_mgm
+
+    def test_gecersiz_liste_id_formati_400_doner(self):
+        resp = self.client.post("/favoriler/ab", json={"sorgu": "istanbul"})  # 3 karakterden kısa
+        self.assertEqual(resp.status_code, 400)
+
+    def test_liste_olustururken_gecersiz_listeid_400_doner(self):
+        resp = self.client.post("/favoriler", json={"listeId": "a b"})  # boşluk yasak
+        self.assertEqual(resp.status_code, 400)
+
+    def test_favori_ekleme_bos_sorgu_400_doner(self):
+        data = self._liste_olustur()
+        headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        resp = self.client.post("/favoriler/yetkili-liste", json={"sorgu": "   "}, headers=headers)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_favori_ekleme_ve_silme_basarili(self):
+        data = self._liste_olustur()
+        headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        self.client.post("/favoriler/yetkili-liste", json={"sorgu": "istanbul"}, headers=headers)
+
+        sil_resp = self.client.delete(
+            "/favoriler/yetkili-liste", json={"sorgu": "istanbul"}, headers=headers
+        )
+        self.assertEqual(sil_resp.status_code, 200)
+        self.assertTrue(sil_resp.get_json()["basarili"])
+
+    def test_olmayan_favoriyi_silmek_404_doner(self):
+        data = self._liste_olustur()
+        headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        resp = self.client.delete(
+            "/favoriler/yetkili-liste", json={"sorgu": "hic-eklenmemis"}, headers=headers
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_favori_liste_goster_hafif_uc_nokta_calisir(self):
+        data = self._liste_olustur()
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        self.client.post(
+            "/favoriler/yetkili-liste", json={"sorgu": "istanbul"}, headers=manage_headers
+        )
+
+        resp = self.client.get("/favoriler/yetkili-liste/liste", headers=read_headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.get_json()["veri"]), 1)
+
+    def test_bos_liste_icin_hava_durumu_bos_liste_doner(self):
+        data = self._liste_olustur()
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        resp = self.client.get("/favoriler/yetkili-liste", headers=read_headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"], [])
+
+    def test_post_favoriler_kombine_liste_olustur_ve_ekle_gecersiz_listeid(self):
+        resp = self.client.post("/favoriler", json={"listeId": "a b", "sorgu": "istanbul"})
+        self.assertEqual(resp.status_code, 400)
+
+    def _alert_olustur(self, headers):
+        return self.client.post(
+            "/alerts/yetkili-liste",
+            json={
+                "tur": "weather.rain_started",
+                "il": "İstanbul",
+                "webhookUrl": "https://example.test/webhook",
+            },
+            headers=headers,
+        )
+
+    def test_alert_ekleme_ve_silme_basarili(self):
+        data = self._liste_olustur()
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        ekle_resp = self._alert_olustur(manage_headers)
+        self.assertEqual(ekle_resp.status_code, 200)
+        alert_id = ekle_resp.get_json()["veri"]["id"]
+
+        sil_resp = self.client.delete(
+            f"/alerts/yetkili-liste/{alert_id}", headers=manage_headers
+        )
+        self.assertEqual(sil_resp.status_code, 200)
+
+    def test_olmayan_alerti_silmek_404_doner(self):
+        data = self._liste_olustur()
+        headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        resp = self.client.delete("/alerts/yetkili-liste/hic-olmayan-id", headers=headers)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_alert_liste_goster_calisir(self):
+        data = self._liste_olustur()
+        manage_headers = {"Authorization": f"Bearer {data['manage_token']}"}
+        read_headers = {"Authorization": f"Bearer {data['read_token']}"}
+        self._alert_olustur(manage_headers)
+
+        resp = self.client.get("/alerts/yetkili-liste", headers=read_headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.get_json()["veri"]), 1)
+
+    def test_alert_ekle_gecersiz_tur_reddedilir(self):
+        with self.assertRaises(AlertHatasi):
+            app_module._alert_ekle(
+                "test-liste",
+                {"tur": "olmayan.tur", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+            )
+
+    def test_alert_ekle_il_eksikse_reddedilir(self):
+        with self.assertRaises(AlertHatasi):
+            app_module._alert_ekle(
+                "test-liste",
+                {"tur": "weather.rain_started", "webhookUrl": "https://x.test/webhook"},
+            )
+
+    def test_alert_ekle_webhookurl_eksikse_reddedilir(self):
+        with self.assertRaises(AlertHatasi):
+            app_module._alert_ekle(
+                "test-liste", {"tur": "weather.rain_started", "il": "İstanbul"}
+            )
+
+    def test_favori_max_kayit_asilinca_reddedilir(self):
+        with patch.object(app_module, "FAVORI_MAX_KAYIT", 1):
+            app_module._favori_ekle("test-liste", "istanbul")
+            with self.assertRaises(FavoriHatasi):
+                app_module._favori_ekle("test-liste", "ankara")
+
+    def test_alert_max_kayit_asilinca_reddedilir(self):
+        with patch.object(app_module, "ALERT_MAX_KAYIT", 1):
+            app_module._alert_ekle(
+                "test-liste",
+                {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+            )
+            with self.assertRaises(AlertHatasi):
+                app_module._alert_ekle(
+                    "test-liste",
+                    {"tur": "weather.rain_started", "il": "Ankara", "webhookUrl": "https://x.test/webhook"},
+                )
+
+
+class TestFavorilerVeAlertlerRedisYolu(unittest.TestCase):
+    """_favori_*/_alert_* fonksiyonlarının Redis-mevcut dalları: yazma/
+    okuma/silme Redis üzerinden, Redis hata verirse belleğe düşme."""
+
+    def setUp(self):
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK.clear()
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+        self.original_mgm = app_module.mgm
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK.clear()
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK.clear()
+            app_module._ALERT_LISTE_INDEX.clear()
+
+    def _redisli_mgm(self, redis_client, hata_sinifi=_PatlayanRedisClient.RedisHatasi):
+        # NOT: hata_sinifi olarak asla düz Exception kullanma — _favori_ekle/
+        # _alert_ekle gibi fonksiyonlar redis try/except bloğu İÇİNDE
+        # kasıtlı FavoriHatasi/AlertHatasi fırlatır (max kayıt aşımı); geniş
+        # bir Exception, gerçek redis.RedisError'ın asla yakalamayacağı bu
+        # hataları da yanlışlıkla yutar.
+        fake = FakeMGM()
+        fake._redis_available = True
+        fake.redis_client = redis_client
+        fake.redis_prefix = "test:"
+        fake._redis_error_cls = hata_sinifi
+        app_module.mgm = fake
+        return fake
+
+    def test_favori_ekle_redis_uzerinden_yazar(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+
+        app_module._favori_ekle("test-liste", "istanbul")
+
+        anahtar = app_module._favori_redis_key("test-liste", "test:")
+        self.assertIn(anahtar, redis_client.store)
+        self.assertEqual(redis_client.expire_calls, [(anahtar, app_module.FAVORI_TTL_SANIYE)])
+
+    def test_favori_ekle_redis_max_kayit_asilinca_reddedilir(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        with patch.object(app_module, "FAVORI_MAX_KAYIT", 1):
+            app_module._favori_ekle("test-liste", "istanbul")
+            with self.assertRaises(FavoriHatasi):
+                app_module._favori_ekle("test-liste", "ankara")
+
+    def test_favori_ekle_redis_hata_verince_bellege_duser(self):
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        app_module._favori_ekle("test-liste", "istanbul")
+
+        self.assertIn("istanbul", app_module._FAVORI_BELLEK["test-liste"])
+
+    def test_favori_sil_redis_uzerinden_siler(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        app_module._favori_ekle("test-liste", "istanbul")
+
+        silindi = app_module._favori_sil("test-liste", "istanbul")
+        self.assertTrue(silindi)
+
+    def test_favori_sil_redis_hata_verince_bellege_duser(self):
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK["test-liste"]["istanbul"] = {"sorgu": "istanbul"}
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        silindi = app_module._favori_sil("test-liste", "istanbul")
+        self.assertTrue(silindi)
+
+    def test_favori_listele_redis_uzerinden_okur(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        app_module._favori_ekle("test-liste", "istanbul")
+
+        sonuc = app_module._favori_listele("test-liste")
+        self.assertEqual(len(sonuc), 1)
+        self.assertEqual(sonuc[0]["sorgu"], "istanbul")
+
+    def test_favori_listele_redis_hata_verince_bellekten_okur(self):
+        with app_module._FAVORI_BELLEK_KILIT:
+            app_module._FAVORI_BELLEK["test-liste"]["istanbul"] = {"sorgu": "istanbul"}
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        sonuc = app_module._favori_listele("test-liste")
+        self.assertEqual(len(sonuc), 1)
+
+    def test_alert_ekle_redis_uzerinden_yazar(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+
+        app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+
+        all_key = app_module._alert_redis_all_key("test:")
+        self.assertIn(all_key, redis_client.store)
+
+    def test_alert_ekle_redis_max_kayit_asilinca_reddedilir(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        with patch.object(app_module, "ALERT_MAX_KAYIT", 1):
+            app_module._alert_ekle(
+                "test-liste",
+                {"tur": "weather.rain_started", "il": "A", "webhookUrl": "https://x.test/webhook"},
+            )
+            with self.assertRaises(AlertHatasi):
+                app_module._alert_ekle(
+                    "test-liste",
+                    {"tur": "weather.rain_started", "il": "B", "webhookUrl": "https://x.test/webhook"},
+                )
+
+    def test_alert_ekle_redis_hata_verince_bellege_duser(self):
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        kayit = app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+
+        self.assertIn(kayit["id"], app_module._ALERT_BELLEK)
+
+    def test_alert_sil_redis_uzerinden_siler(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        kayit = app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+
+        silindi = app_module._alert_sil("test-liste", kayit["id"])
+        self.assertTrue(silindi)
+
+    def test_alert_sil_redis_hata_verince_bellege_duser(self):
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK["abc123"] = {"id": "abc123"}
+            app_module._ALERT_LISTE_INDEX["test-liste"].add("abc123")
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        silindi = app_module._alert_sil("test-liste", "abc123")
+        self.assertTrue(silindi)
+
+    def test_alert_listele_redis_uzerinden_okur(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+
+        sonuc = app_module._alert_listele("test-liste")
+        self.assertEqual(len(sonuc), 1)
+
+    def test_alert_listele_bos_id_seti_bos_liste_doner(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+
+        sonuc = app_module._alert_listele("hic-alerti-olmayan-liste")
+        self.assertEqual(sonuc, [])
+
+    def test_alert_listele_redis_hata_verince_bellekten_okur(self):
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK["abc123"] = {"id": "abc123", "olusturmaTarihi": "2026"}
+            app_module._ALERT_LISTE_INDEX["test-liste"].add("abc123")
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        sonuc = app_module._alert_listele("test-liste")
+        self.assertEqual(len(sonuc), 1)
+
+    def test_alert_tumunu_al_redis_uzerinden_okur(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+
+        sonuc = app_module._alert_tumunu_al()
+        self.assertEqual(len(sonuc), 1)
+
+    def test_alert_kayit_guncelle_redis_uzerinden_yazar(self):
+        redis_client = _SahteRedisClient()
+        self._redisli_mgm(redis_client)
+        kayit = app_module._alert_ekle(
+            "test-liste",
+            {"tur": "weather.rain_started", "il": "İstanbul", "webhookUrl": "https://x.test/webhook"},
+        )
+        kayit["sonTetiklenme"] = "2026-09-20T10:00:00Z"
+
+        app_module._alert_kayit_guncelle(kayit)
+
+        all_key = app_module._alert_redis_all_key("test:")
+        guncel = json.loads(redis_client.store[all_key][kayit["id"].encode()])
+        self.assertEqual(guncel["sonTetiklenme"], "2026-09-20T10:00:00Z")
+
+    def test_alert_kayit_guncelle_redis_hata_verince_bellege_duser(self):
+        with app_module._ALERT_BELLEK_KILIT:
+            app_module._ALERT_BELLEK["abc123"] = {"id": "abc123"}
+        self._redisli_mgm(_PatlayanRedisClient(), hata_sinifi=_PatlayanRedisClient.RedisHatasi)
+
+        app_module._alert_kayit_guncelle({"id": "abc123", "sonTetiklenme": "x"})
+
+        self.assertEqual(app_module._ALERT_BELLEK["abc123"]["sonTetiklenme"], "x")
+
+
+class TestAlertKontrolUcNoktasi(unittest.TestCase):
+    """POST /api/v1/alerts/check: CRON_SECRET korumalı cron tetikleyici."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+
+    def test_cron_secret_tanimsizsa_503_doner(self):
+        with patch.dict("os.environ", {}, clear=False):
+            for anahtar in ("CRON_SECRET", "APP_CRON_SECRET"):
+                os.environ.pop(anahtar, None)
+            resp = self.client.post("/api/v1/alerts/check")
+        self.assertEqual(resp.status_code, 503)
+
+    def test_yanlis_secretle_401_doner(self):
+        with patch.dict("os.environ", {"CRON_SECRET": "dogru-secret"}):
+            resp = self.client.post(
+                "/api/v1/alerts/check", headers={"Authorization": "Bearer yanlis-secret"}
+            )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_dogru_secretle_200_doner_ve_sonuc_iceriginde_calisir(self):
+        with patch.dict("os.environ", {"CRON_SECRET": "dogru-secret"}):
+            resp = self.client.post(
+                "/api/v1/alerts/check", headers={"Authorization": "Bearer dogru-secret"}
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["basarili"])
 
 
 class TestAlertTransitions(unittest.TestCase):
@@ -812,6 +1332,130 @@ class TestAlertTransitions(unittest.TestCase):
         self.assertEqual([result["tetiklenen"] for result in results], [0, 0, 1])
         self.assertEqual(alert["webhook_calls"], 1)
         self.assertTrue(alert["sonDurum"]["yagisli"])
+
+    def test_sicaklik_esigi_asilinca_tetiklenir(self):
+        alert = self._alert_olustur("weather.temp_threshold", esik=30)
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={"sicaklik": 35}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertTrue(tetiklendi)
+        self.assertEqual(olcum["sicaklik"], 35)
+
+    def test_sicaklik_esigin_altindaysa_tetiklenmez(self):
+        alert = self._alert_olustur("weather.temp_threshold", esik=30)
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={"sicaklik": 20}):
+            tetiklendi, _olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+
+    def test_sicaklik_altinda_yonuyle_dusunce_tetiklenir(self):
+        alert = self._alert_olustur("weather.temp_threshold", esik=0)
+        alert["yon"] = "altinda"
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={"sicaklik": -5}):
+            tetiklendi, _olcum = app_module._alert_degerlendir(alert)
+        self.assertTrue(tetiklendi)
+
+    def test_sicaklik_verisi_yoksa_tetiklenmez(self):
+        alert = self._alert_olustur("weather.temp_threshold", esik=30)
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+        self.assertIsNone(olcum["sicaklik"])
+
+    def test_ruzgar_esigi_asilinca_tetiklenir(self):
+        alert = self._alert_olustur("weather.wind_gust_exceeded", esik=40)
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={"ruzgarHizi": 55}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertTrue(tetiklendi)
+        self.assertEqual(olcum["ruzgarHizi"], 55)
+
+    def test_ruzgar_verisi_yoksa_tetiklenmez(self):
+        alert = self._alert_olustur("weather.wind_gust_exceeded", esik=40)
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+        self.assertIsNone(olcum["ruzgarHizi"])
+
+    def test_uyari_yokken_uyari_yayinlaninca_tetiklenir(self):
+        alert = self._alert_olustur("weather.warning_issued")
+        alert["sonDurum"] = {"aktifUyariVar": False}
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "uyarilar", return_value={"ham": [{"baslik": "test"}]}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertTrue(tetiklendi)
+        self.assertTrue(olcum["aktifUyariVar"])
+
+    def test_uyari_ilk_kontrolde_hic_tetiklenmez(self):
+        # sonDurum yok (ilk kontrol) -> geçiş algılanamaz, tetiklenmez
+        alert = self._alert_olustur("weather.warning_issued")
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "uyarilar", return_value={"ham": [{"baslik": "test"}]}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+        self.assertTrue(olcum["aktifUyariVar"])
+
+    def test_don_riski_esigi_asinca_tetiklenir(self):
+        alert = self._alert_olustur("weather.frost_risk", esik="Orta Don")
+        app_module.mgm = FakeMGM()
+        with patch.object(
+            app_module.mgm, "don_kiragi_riski", return_value={"genelRiskSeviyesi": "Kuvvetli Don"}
+        ):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertTrue(tetiklendi)
+        self.assertEqual(olcum["genelRiskSeviyesi"], "Kuvvetli Don")
+
+    def test_don_riski_esigin_altindaysa_tetiklenmez(self):
+        alert = self._alert_olustur("weather.frost_risk", esik="Kuvvetli Don")
+        app_module.mgm = FakeMGM()
+        with patch.object(
+            app_module.mgm, "don_kiragi_riski", return_value={"genelRiskSeviyesi": "Hafif Don"}
+        ):
+            tetiklendi, _olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+
+    def test_bilinmeyen_tur_tetiklenmez_bos_olcum_doner(self):
+        # _alert_degerlendir'in son güvenlik ağı: tur tanınmıyorsa
+        alert = self._alert_olustur("weather.rain_started")
+        alert["tur"] = "weather.gelecekte_eklenecek_tur"
+        app_module.mgm = FakeMGM()
+        with patch.object(app_module.mgm, "guncel_durum_yedekli", return_value={"durumKodu": "A"}):
+            tetiklendi, olcum = app_module._alert_degerlendir(alert)
+        self.assertFalse(tetiklendi)
+        self.assertEqual(olcum, {})
+
+    def test_webhook_gonderimi_basarisiz_olunca_hatali_webhook_sayilir(self):
+        self._alert_olustur("weather.rain_started")
+        app_module.mgm = FakeMGM(alert_observations=[{"durumKodu": "A"}, {"durumKodu": "Y"}])
+        with patch.object(app_module, "_alert_webhook_gonder", return_value=False):
+            app_module._alert_kontrol_calistir()
+            sonuc = app_module._alert_kontrol_calistir()
+        self.assertEqual(sonuc["tetiklenen"], 1)
+        self.assertEqual(sonuc["hataliWebhook"], 1)
+
+
+class TestIcZamanlayici(unittest.TestCase):
+    """_ic_zamanlayiciyi_baslat(): ENABLE_INTERNAL_SCHEDULER kapalıyken
+    no-op, açıkken APScheduler kurulu değilse RuntimeError."""
+
+    def test_kapaliyken_hicbir_sey_yapmaz(self):
+        with patch.dict("os.environ", {"ENABLE_INTERNAL_SCHEDULER": "false"}):
+            self.assertIsNone(app_module._ic_zamanlayiciyi_baslat())
+
+    def test_env_tanimsizken_de_hicbir_sey_yapmaz(self):
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("ENABLE_INTERNAL_SCHEDULER", None)
+            self.assertIsNone(app_module._ic_zamanlayiciyi_baslat())
+
+    def test_aciksa_ve_apscheduler_kurulu_degilse_runtimeerror_firlatir(self):
+        with (
+            patch.dict("os.environ", {"ENABLE_INTERNAL_SCHEDULER": "true"}),
+            self.assertRaises(RuntimeError),
+        ):
+            app_module._ic_zamanlayiciyi_baslat()
 
 
 class _FakeWebhookResponse:
@@ -1026,6 +1670,26 @@ class TestKonumVeAramaDogrulama(unittest.TestCase):
         resp = self.client.get("/guncel/" + "a" * 81)
         self.assertEqual(resp.status_code, 400)
 
+    def test_gecerli_tarih_formatiyla_sondurum_calisir(self):
+        resp = self.client.get("/sondurum/en-dusuk-sicakliklar?tarih=2026-08-14")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_yanlis_formatli_tarih_400_doner(self):
+        for kotu_deger in ["14-08-2026", "2026/08/14", "<script>", "a" * 50]:
+            with self.subTest(deger=kotu_deger):
+                resp = self.client.get(f"/sondurum/en-dusuk-sicakliklar?tarih={kotu_deger}")
+                self.assertEqual(resp.status_code, 400)
+
+    def test_sekli_dogru_ama_gecersiz_takvim_tarihi_400_doner(self):
+        for kotu_tarih in ["2026-13-01", "2026-02-30", "2026-00-05"]:
+            with self.subTest(tarih=kotu_tarih):
+                resp = self.client.get(f"/sondurum/en-yuksek-sicakliklar?tarih={kotu_tarih}")
+                self.assertEqual(resp.status_code, 400)
+
+    def test_tarih_verilmezse_dogrulama_atlanir(self):
+        resp = self.client.get("/sondurum/toplam-yagis")
+        self.assertEqual(resp.status_code, 200)
+
     def test_uyarilar_opsiyonel_il_gecersizse_400_doner(self):
         resp = self.client.get("/uyarilar?il=<script>")
         self.assertEqual(resp.status_code, 400)
@@ -1169,6 +1833,220 @@ class TestEtagConditionalGet(unittest.TestCase):
     def test_post_istegi_etag_almaz(self):
         resp = self.client.post("/toplu", json={"sorgular": ["istanbul"]})
         self.assertNotIn("ETag", resp.headers)
+
+
+class TestHavaVerisiRotalari(unittest.TestCase):
+    """/guncel, /tahmin, /saatlik, /hava-durumu, /hava-kalitesi,
+    /gun-ay-bilgisi, /polen, /deniz, /don-uyarisi, /akilli-ozet,
+    /map/geojson, /sondurum/* — her biri için başarı ve 404/502 yolu."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_guncel_basarili(self):
+        resp = self.client.get("/guncel/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["basarili"])
+
+    def test_tahmin_basarili(self):
+        resp = self.client.get("/tahmin/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"][0]["enYuksek"], 27)
+
+    def test_tahmin_istasyon_hatasinda_404_doner(self):
+        # ilce_istasyonu merkezId=93401 döner, gunluk_tahmin bu id'yi
+        # değil "coken-istasyon" değerini bekliyor — bu yüzden
+        # gunluk_tahmin'in kendi MGMWeatherError yolunu ayrıca
+        # doğrudan (route üstünden değil) client seviyesinde test ettik
+        # (tests/test_mgm_client.py). Burada yalnızca başarı yolu kalır.
+        resp = self.client.get("/tahmin/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_saatlik_basarili(self):
+        resp = self.client.get("/saatlik/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_hava_durumu_basarili(self):
+        resp = self.client.get("/hava-durumu/İstanbul?ilce=Kadıköy")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"]["ilce"], "Kadıköy")
+
+    def test_hava_kalitesi_basarili(self):
+        resp = self.client.get("/hava-kalitesi/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"]["pm10"], 30.0)
+
+    def test_hava_kalitesi_konumsuz_ilde_404_doner(self):
+        resp = self.client.get("/hava-kalitesi/konumsuz-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_gun_ay_bilgisi_basarili(self):
+        resp = self.client.get("/gun-ay-bilgisi/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        veri = resp.get_json()["veri"]
+        self.assertEqual(veri["gunDogumu"], "06:30")
+        self.assertEqual(veri["ayEvresi"]["evreAdi"], "Dolunay")
+
+    def test_gun_ay_bilgisi_konumsuz_ilde_404_doner(self):
+        resp = self.client.get("/gun-ay-bilgisi/konumsuz-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_polen_basarili(self):
+        resp = self.client.get("/polen/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_polen_konumsuz_ilde_404_doner(self):
+        resp = self.client.get("/polen/konumsuz-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_deniz_basarili(self):
+        resp = self.client.get("/deniz/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"]["denizSuyuSicakligi"], 22.5)
+
+    def test_deniz_konumsuz_ilde_404_doner(self):
+        resp = self.client.get("/deniz/konumsuz-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_deniz_gecerli_lat_lon_ile_istasyon_konumunu_atlar(self):
+        resp = self.client.get("/deniz/konumsuz-il?lat=41.0&lon=29.0")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_deniz_gecersiz_lat_lon_400_doner(self):
+        resp = self.client.get("/deniz/İstanbul?lat=abc&lon=29.0")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_deniz_aralik_disi_lat_lon_400_doner(self):
+        resp = self.client.get("/deniz/İstanbul?lat=999&lon=29.0")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_don_uyarisi_basarili(self):
+        resp = self.client.get("/don-uyarisi/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"]["genelRiskSeviyesi"], "Risk Yok")
+
+    def test_akilli_ozet_basarili(self):
+        resp = self.client.get("/akilli-ozet/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_akilli_ozet_mgm_hatasinda_404_doner(self):
+        resp = self.client.get("/akilli-ozet/coken-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_map_geojson_basarili(self):
+        resp = self.client.get("/map/geojson")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["type"], "FeatureCollection")
+
+    def test_map_geojson_mgm_hatasinda_502_doner(self):
+        app_module.mgm = FakeMGM(should_fail_health=True)
+        resp = self.client.get("/map/geojson")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_sondurum_en_dusuk_basarili(self):
+        resp = self.client.get("/sondurum/en-dusuk-sicakliklar?tarih=2026-08-14")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["veri"]["tarih"], "2026-08-14")
+
+    def test_sondurum_en_dusuk_mgm_hatasinda_502_doner(self):
+        resp = self.client.get("/sondurum/en-dusuk-sicakliklar?tarih=2099-01-01")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_sondurum_en_yuksek_basarili(self):
+        resp = self.client.get("/sondurum/en-yuksek-sicakliklar")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_sondurum_toplam_yagis_basarili(self):
+        resp = self.client.get("/sondurum/toplam-yagis")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_sondurum_kar_basarili(self):
+        resp = self.client.get("/sondurum/kar-kalinliklari")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_sondurum_son_gozlemler_basarili(self):
+        resp = self.client.get("/sondurum/son-gozlemler")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_istasyonlar_basarili(self):
+        resp = self.client.get("/istasyonlar/İstanbul")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_istasyonlar_mgm_hatasinda_404_doner(self):
+        app_module.mgm = FakeMGM(should_fail_health=True)
+        resp = self.client.get("/istasyonlar/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_istasyonsuz_ilde_guncel_404_doner(self):
+        resp = self.client.get("/guncel/istasyonsuz-il")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_saatlik_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "saatlik_tahmin", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/saatlik/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_hava_durumu_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "hava_durumu", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/hava-durumu/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_hava_kalitesi_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "hava_kalitesi", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/hava-kalitesi/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_gun_ay_bilgisi_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "gun_dogumu_batimi", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/gun-ay-bilgisi/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_sondurum_en_yuksek_mgm_hatasinda_502_doner(self):
+        with patch.object(app_module.mgm, "en_yuksek_sicakliklar", side_effect=MGMWeatherError("t")):
+            resp = self.client.get("/sondurum/en-yuksek-sicakliklar")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_sondurum_toplam_yagis_mgm_hatasinda_502_doner(self):
+        with patch.object(app_module.mgm, "toplam_yagislar", side_effect=MGMWeatherError("t")):
+            resp = self.client.get("/sondurum/toplam-yagis")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_sondurum_kar_mgm_hatasinda_502_doner(self):
+        with patch.object(app_module.mgm, "kar_kalinliklari", side_effect=MGMWeatherError("t")):
+            resp = self.client.get("/sondurum/kar-kalinliklari")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_sondurum_son_gozlemler_mgm_hatasinda_502_doner(self):
+        with patch.object(app_module.mgm, "son_gozlemler", side_effect=MGMWeatherError("t")):
+            resp = self.client.get("/sondurum/son-gozlemler")
+        self.assertEqual(resp.status_code, 502)
+
+    def test_polen_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "polen_indeksi", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/polen/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_deniz_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "deniz_durumu", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/deniz/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_don_uyarisi_mgm_hatasinda_404_doner(self):
+        with patch.object(app_module.mgm, "don_kiragi_riski", side_effect=MGMWeatherError("test")):
+            resp = self.client.get("/don-uyarisi/İstanbul")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_404_handler_bilinmeyen_yolda_calisir(self):
+        resp = self.client.get("/hic-var-olmayan-bir-yol")
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(resp.get_json()["basarili"])
 
 
 if __name__ == "__main__":

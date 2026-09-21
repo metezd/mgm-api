@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # --- girdi doğrulama/sanitization deseni -----------------------------
@@ -31,6 +33,29 @@ class KonumSorguModel(BaseModel):
 
     il: str | None = Field(default=None, min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
     ilce: str | None = Field(default=None, min_length=1, max_length=80, pattern=_YER_ADI_DESENI)
+
+
+class TarihSorguModel(BaseModel):
+    """`/sondurum/*` uç noktalarındaki `tarih` query parametresi için
+    sıkı doğrulama. Yalnızca `YYYY-MM-DD` formatı ve gerçek bir takvim
+    tarihi (mgm_client'ın beklediği format — bkz. `_sondurum_sicaklik`'in
+    `tarihler[0][:10]` kullanımı); garbage/enjeksiyon karakterlerine
+    izin vermez."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    tarih: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("tarih")
+    @classmethod
+    def tarih_gecerli_takvim_tarihi_olmali(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("'tarih' geçerli bir takvim tarihi olmalıdır") from exc
+        return value
 
 
 class SerbestAramaModel(BaseModel):

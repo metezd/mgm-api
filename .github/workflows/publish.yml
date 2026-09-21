@@ -9,8 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write
-      contents: read
+      id-token: write  #
 
     steps:
       - name: Repoyu Klonla
@@ -27,7 +26,5 @@ jobs:
       - name: Paketi Derle (sdist + wheel)
         run: python -m build
 
-      - name: TestPyPI'a Yükle
+      - name: PyPI'a Yükle
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/

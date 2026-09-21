@@ -197,6 +197,7 @@ from api.models import (
     KonumSorguModel,
     ListeOlusturModel,
     SerbestAramaModel,
+    TarihSorguModel,
     TopluGovdeModel,
     WebhookPayloadModel,
 )
@@ -630,6 +631,22 @@ def _arama_dogrula(sorgu: str):
             400,
         )
     return model.sorgu, None
+
+
+def _tarih_sorgu_dogrula(tarih: str | None):
+    """`/sondurum/*` uç noktalarındaki `tarih` query parametresini
+    TarihSorguModel ile doğrular (yalnızca `YYYY-MM-DD`, gerçek bir
+    takvim tarihi). Geçersizse (None, (response, 400)) döner, geçerliyse
+    (temizlenmiş_tarih, None) döner."""
+    try:
+        model = TarihSorguModel(tarih=(tarih or "").strip() or None)
+    except ValidationError as exc:
+        detay = [{"loc": hata["loc"], "msg": hata["msg"], "type": hata["type"]} for hata in exc.errors()]
+        return None, (
+            jsonify({"basarili": False, "hata": "Geçersiz tarih parametresi.", "detay": detay}),
+            400,
+        )
+    return model.tarih, None
 
 _ALERT_BELLEK: dict[str, dict] = {}
 _ALERT_LISTE_INDEX: dict[str, set[str]] = defaultdict(set)
@@ -1567,7 +1584,9 @@ def gun_ay_bilgisi(il: str):
 
 @app.get("/sondurum/en-dusuk-sicakliklar")
 def sondurum_en_dusuk():
-    tarih = request.args.get("tarih")
+    tarih, hata = _tarih_sorgu_dogrula(request.args.get("tarih"))
+    if hata:
+        return hata
     try:
         veri = mgm.en_dusuk_sicakliklar(tarih)
         return jsonify({"basarili": True, "veri": veri})
@@ -1577,7 +1596,9 @@ def sondurum_en_dusuk():
 
 @app.get("/sondurum/en-yuksek-sicakliklar")
 def sondurum_en_yuksek():
-    tarih = request.args.get("tarih")
+    tarih, hata = _tarih_sorgu_dogrula(request.args.get("tarih"))
+    if hata:
+        return hata
     try:
         veri = mgm.en_yuksek_sicakliklar(tarih)
         return jsonify({"basarili": True, "veri": veri})
@@ -1587,7 +1608,9 @@ def sondurum_en_yuksek():
 
 @app.get("/sondurum/toplam-yagis")
 def sondurum_toplam_yagis():
-    tarih = request.args.get("tarih")
+    tarih, hata = _tarih_sorgu_dogrula(request.args.get("tarih"))
+    if hata:
+        return hata
     try:
         veri = mgm.toplam_yagislar(tarih)
         return jsonify({"basarili": True, "veri": veri})
@@ -1733,7 +1756,7 @@ def not_found(_exc):
     return jsonify({"basarili": False, "hata": "Uç nokta bulunamadı."}), 404
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - gerçek sunucu başlatma, entegrasyon testleri kapsamı dışında
     host = os.getenv("APP_HOST", "127.0.0.1")
     port = int(os.getenv("APP_PORT", "5000"))
     server = os.getenv("APP_SERVER", "waitress").strip().lower()

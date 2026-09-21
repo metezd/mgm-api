@@ -5,14 +5,14 @@ from .client import MGMWeather
 
 
 def _cli_calistir() -> None:
-    """`python mgm_client.py <il> [ilce]` komut satırı arayüzü. Sunucu
+    """`python -m mgm_client <il> [ilce]` komut satırı arayüzü. Sunucu
     gerektirmez, sadece hava_durumu()'u çağırıp sonucu JSON basar."""
     import argparse
     import json
     import sys
 
     ayiklayici = argparse.ArgumentParser(
-        prog="mgm_client.py",
+        prog="python -m mgm_client",
         description="MGM (Türkiye) hava durumu verisine komut satırından, HTTP sunucu olmadan erişir.",
     )
     ayiklayici.add_argument("il", help="İl adı (örn. İstanbul)")

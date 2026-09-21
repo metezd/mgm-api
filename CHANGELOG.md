@@ -6,6 +6,55 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- Ölü kod temizliği: kök dizindeki eski düz dosya `mgm_client.py`
+  silindi. `mgm_client/` paketine bölünme çoktan tamamlanmıştı
+  (bkz. `2ce3d20` "tek dosyadan cok dosyali pakete bolundu"), Python
+  zaten paketi import ediyordu (`import mgm_client` her zaman
+  `mgm_client/__init__.py`'yi çözümlüyordu — Python paket/modül aynı
+  adı taşıyınca paketi önceliklendirir); düz dosya tamamen gölgede,
+  kullanılmayan durumdaydı. `mgm_client/_cli.py`'deki eski
+  `python mgm_client.py ...` referansı ve README/development.md'deki
+  karşılıkları güncel kullanıma (`python -m mgm_client ...`) çevrildi.
+  387/387 test hâlâ geçiyor, davranış değişikliği yok.
+
+- **Tutarsızlık düzeltmesi — `tarih` query param'ı da doğrulanıyor:**
+  `/sondurum/en-dusuk-sicakliklar`, `/sondurum/en-yuksek-sicakliklar`,
+  `/sondurum/toplam-yagis`'taki `tarih` parametresi daha önce hiç
+  doğrulanmadan doğrudan mgm_client'a gidiyordu (il/ilce/arama için
+  yapılan sıkı Pydantic doğrulamasıyla tutarsızdı). Yeni
+  `TarihSorguModel` (`api/models.py`) hem `YYYY-MM-DD` biçimini hem
+  gerçek bir takvim tarihi olduğunu (`date.fromisoformat`) doğruluyor;
+  geçersizse 400 döner. 4 yeni test.
+
+- Test coverage artırıldı — `app.py` %63→**%94** (903→888 satır,
+  `if __name__ == "__main__":` bloğu `# pragma: no cover` ile hariç
+  tutuldu — gerçek sunucu başlatma, entegrasyon testleri kapsamı
+  dışında). 94 yeni test: tüm hava verisi route'ları (`/guncel`,
+  `/tahmin`, `/saatlik`, `/hava-durumu`, `/hava-kalitesi`,
+  `/gun-ay-bilgisi`, `/polen`, `/deniz`, `/map/geojson`,
+  `/don-uyarisi`, `/akilli-ozet`, `/sondurum/*`) başarı + hata yolları
+  (`FakeMGM`'e bu route'ların çağırdığı ~14 eksik metod eklendi — daha
+  önce hiç egzersiz edilmiyorlardı), 4 eksik alert türünün
+  (`weather.temp_threshold`, `wind_gust_exceeded`, `frost_risk`,
+  `warning_issued`) değerlendirme mantığı, favoriler/alerts CRUD
+  route'ları (ekle/sil/listele, max kayıt aşımı, geçersiz liste_id),
+  favoriler/alerts'ın Redis-mevcut yazma/okuma/silme dalları + Redis
+  hatasında bellek fallback'i (sahte Redis istemcisiyle), cron
+  korumalı `/api/v1/alerts/check` (secret yok/yanlış/doğru), iç
+  zamanlayıcı (`ENABLE_INTERNAL_SCHEDULER`) kapalı/paket-yok yolları.
+  383/383 test geçiyor. **Genel proje coverage'ı %70→%93.**
+
+- Test coverage artırıldı — `api/auth.py` %73→**%100**,
+  `api/middleware.py` %74→**%100**. Yeni `tests/test_auth.py` (15
+  test: `ListeYetkiService` — liste_id üretimi/doğrulama, Redis+bellek
+  depolama ve çakışma tespiti, Bearer token doğrulama, scope karışıklığı
+  olmaması, Redis hatasında bellek fallback'i) ve `tests/test_middleware.py`
+  (28 test: `RateLimiter` — güvenilir proxy zincirinden gerçek IP
+  çözümü, Redis Lua script + bellek fallback, pencere/limit mantığı,
+  `validate_json_body`/`validate_date_range`/`route_limit_setting`).
+  289/289 test geçiyor, genel proje coverage'ı %80→%82. Sırada:
+  `app.py` (%63).
+
 - Test coverage artırıldı (`mgm_client/_kalite_deniz.py` %12→%95,
   `mgm_client/_harita.py` %21→%98, `mgm_client/_don_gun_ay.py`
   %60→%100). 39 yeni test: hava_kalitesi/polen_indeksi/deniz_durumu

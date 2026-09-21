@@ -69,3 +69,14 @@ ignore = [
     # gürültü üretir. N (pep8-naming) de aynı gerekçeyle select'te yok.
     "RUF001", "RUF002", "RUF003",
 ]
+
+[tool.coverage.run]
+branch = true
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

@@ -23,11 +23,11 @@
 docker compose up --build
 ```
 
-Docker olmadan çalıştırmak veya buluta deploy etmek için detaylı yönergeler [docs/development.md](docs/development.md) dosyasında bulunur.
+Docker olmadan çalıştırmak için [docs/development.md](docs/development.md) dosyasına bakın.
 
 ## Gömülü Kullanım
 
-`mgm_client.py` Flask veya bir HTTP sunucusuna ihtiyaç duymaz. Herhangi bir uygulamaya gömülüp çağırılabilir:
+`mgm_client` Flask veya bir HTTP sunucusuna ihtiyaç duymaz. Herhangi bir uygulamaya gömülüp çağırılabilir:
 
 ```bash
 pip install .          # sadece requests + tzdata kurulur
@@ -51,7 +51,7 @@ pip install mgm-tr[zamanlayici]  # opsiyonel iç alert zamanlayıcısı (APSched
 Hızlı test için:
 
 ```bash
-python mgm_client.py İstanbul Kadıköy
+python -m mgm_client İstanbul Kadıköy
 ```
 
 ## Kullanım
@@ -93,5 +93,5 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 
 - [docs/development.md](docs/development.md)
 - [docs/resilience.md](docs/resilience.md)
-- [docs/monitoring.md](docs/monitoring.md) hazır Prometheus + Grafana dashboard (`docker compose --profile monitoring up -d`)
+- [docs/monitoring.md](docs/monitoring.md) — hazır Prometheus + Grafana dashboard'u (`docker compose --profile monitoring up -d`)
 - [docs/endpoint.md](docs/endpoint.md)

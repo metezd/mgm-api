@@ -69,6 +69,16 @@ pip install ruff && ruff check .
 
 İkisi de CI'da her push/PR'da otomatik çalışır (`.github/workflows/main.yml`).
 
+### Coverage
+
+```bash
+pip install coverage
+coverage run -m unittest discover -s tests
+coverage report -m
+```
+
+CI, coverage raporunu üretir ve `pyproject.toml`'daki `[tool.coverage.report] fail_under = 85` eşiğinin altına düşülürse build'i kırar (dal/branch coverage dahil, mevcut gerçek coverage ~%91). Eşik, mevcut coverage'ın biraz altında tutuluyor ki küçük, henüz test edilmemiş eklemeler CI'ı hemen kırmasın — ama bir dosyanın toptan test edilmemesi gibi büyük bir gerileme hâlâ yakalanır. Yalnızca gerçek sunucu başlatma kodu (`if __name__ == "__main__":`) `# pragma: no cover` ile bilinçli olarak hariç tutulur.
+
 ## Bağımlılık Yönetimi
 
 Projedeki Python bağımlılıkları iki aşamalı bir yapıyla yönetilmektedir: 
@@ -103,7 +113,7 @@ API tarafından döndürülen her HTTP yanıtı, istemciyi bilgilendirmek amacı
 
 - `http_requests_total{method,endpoint,status}` endpoint bazlı istek sayacı. Etiket olarak ham path değil Flask'ın eşleştirdiği route adı (`request.endpoint`, ör. `guncel`) kullanılır. `/guncel/<il>` gibi path'lerde `il` değerini etikete koymak sınırsız kardinaliteye (her farklı il için ayrı zaman serisi) yol açardı.
 - `http_request_duration_seconds{method,endpoint}` histogram, aynı etiketleme mantığıyla.
-- `mgm_cache_result_total{sonuc}` `hit`/`stale_hit`/`miss` sayaçları (`mgm_client.py`, `_cached_get()` içinde artırılır).
+- `mgm_cache_result_total{sonuc}` `hit`/`stale_hit`/`miss` sayaçları (`mgm_client`, `_cached_get()` içinde artırılır).
 - `mgm_circuit_breaker_state` 0=kapalı, 1=yarı-açık, 2=açık. Her scrape'te `mgm.circuit_breaker_saglik_ozeti()`'nden okunur.
 - `mgm_rate_limit_rejected_total` 429 ile reddedilen istek sayısı.
 
