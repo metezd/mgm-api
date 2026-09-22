@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mgm-tr"
 version = "0.1.0"
-description = "Türkiye Meteoroloji Genel Müdürlüğü (MGM) hava durumu verisine bağımsız erişim, HTTP sunucu gerektirmez"
+description = "Türkiye Meteoroloji Genel Müdürlüğü hava durumu verisine bağımsız erişim"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -64,9 +64,6 @@ select = [
     "RUF", # ruff'a özgü ek kontroller
 ]
 ignore = [
-    # RUF001-003: "belirsiz Unicode karakter" uyarıları Türkçe metindeki
-    # her ı/ğ/ş/ö/ü/ç harfini işaretliyor, Türkçe bir kod tabanında saf
-    # gürültü üretir. N (pep8-naming) de aynı gerekçeyle select'te yok.
     "RUF001", "RUF002", "RUF003",
 ]
 

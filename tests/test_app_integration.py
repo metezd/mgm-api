@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import unittest
@@ -1775,6 +1776,77 @@ class TestCorsWhitelist(unittest.TestCase):
         resp = self.client.get("/istasyonlar/İstanbul")
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+
+class TestRequestId(unittest.TestCase):
+    """Request correlation ID: her isteğe bir `request_id` atanır,
+    `X-Request-ID` yanıt header'ında döner; istemciden gelen geçerli
+    bir ID varsa o kullanılır, geçersiz/kötü niyetli olan reddedilip
+    yerine sunucu tarafında üretilen bir ID kullanılır (log injection
+    koruması)."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.original_mgm = app_module.mgm
+        app_module.mgm = FakeMGM()
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def tearDown(self):
+        app_module.mgm = self.original_mgm
+        app_module.RATE_LIMIT_BUCKETS.clear()
+
+    def test_x_request_id_verilmezse_uretilir(self):
+        resp = self.client.get("/istasyonlar/İstanbul")
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+
+    def test_gecerli_x_request_id_aynen_yansitilir(self):
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"X-Request-ID": "izleme-id-123"}
+        )
+        self.assertEqual(resp.headers.get("X-Request-ID"), "izleme-id-123")
+
+    def test_iki_farkli_istek_farkli_id_alir(self):
+        birinci = self.client.get("/istasyonlar/İstanbul").headers.get("X-Request-ID")
+        ikinci = self.client.get("/istasyonlar/İstanbul").headers.get("X-Request-ID")
+        self.assertNotEqual(birinci, ikinci)
+
+    def test_kotu_karakterli_x_request_id_reddedilip_uretilen_kullanilir(self):
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"X-Request-ID": "<script>alert(1)</script>"}
+        )
+        gelen = resp.headers.get("X-Request-ID")
+        self.assertNotEqual(gelen, "<script>alert(1)</script>")
+        self.assertRegex(gelen, r"^[A-Za-z0-9_-]{1,64}$")
+
+    def test_asiri_uzun_x_request_id_reddedilip_uretilen_kullanilir(self):
+        resp = self.client.get(
+            "/istasyonlar/İstanbul", headers={"X-Request-ID": "a" * 500}
+        )
+        self.assertNotEqual(resp.headers.get("X-Request-ID"), "a" * 500)
+
+    def test_json_log_formati_gecerli_json_uretir(self):
+        with patch.dict("os.environ", {"LOG_FORMAT": "json"}):
+            formatter = app_module._JsonFormatter()
+            kayit = logging.LogRecord(
+                name="test", level=logging.INFO, pathname="x", lineno=1,
+                msg="deneme %s", args=("mesaj",), exc_info=None,
+            )
+            kayit.request_id = "test-123"
+            cikti = formatter.format(kayit)
+
+        ayrisik = json.loads(cikti)
+        self.assertEqual(ayrisik["mesaj"], "deneme mesaj")
+        self.assertEqual(ayrisik["requestId"], "test-123")
+        self.assertEqual(ayrisik["seviye"], "INFO")
+
+    def test_request_context_disinda_filtre_tire_kullanir(self):
+        kayit = logging.LogRecord(
+            name="test", level=logging.INFO, pathname="x", lineno=1,
+            msg="deneme", args=(), exc_info=None,
+        )
+        filtre = app_module._RequestIdFiltresi()
+        filtre.filter(kayit)
+        self.assertEqual(kayit.request_id, "-")
 
 
 class TestEtagConditionalGet(unittest.TestCase):

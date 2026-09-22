@@ -204,11 +204,17 @@ class TestStaleWhileRevalidate(unittest.TestCase):
         # 2. istek: stale -> eski veri anında döner arka planda yenileme başlar
         ikinci = self._istek(client, "merkezler", {"il": "ankara"})
         self.assertEqual(ikinci, eski_yuk)
-        self.assertGreaterEqual(session.calls, 2)
-        # Arka plan görevinin bitmesi için kısa bekle
-        time.sleep(0.2)
-        # Sonraki istek: taze veri cache'ten döner
-        ucuncu = self._istek(client, "merkezler", {"il": "ankara"})
+        self.assertGreaterEqual(session.calls, 1)
+
+        # Arka plan thread'i ayrı bir thread'de asenkron çalışıyor; sabit
+        # bir sleep'e güvenmek yerine, cache'in gerçekten güncellenmesini
+        # (en fazla ~2 sn) deterministik biçimde bekliyoruz.
+        ucuncu = None
+        for _ in range(100):
+            ucuncu = self._istek(client, "merkezler", {"il": "ankara"})
+            if ucuncu == yeni_yuk:
+                break
+            time.sleep(0.02)
         self.assertEqual(ucuncu, yeni_yuk)
 
     def test_swr_kapaliyken_stale_veri_donmez(self):
@@ -697,9 +703,18 @@ class TestCircuitBreaker(unittest.TestCase):
         time.sleep(1.2)  # TTL geçsin, stale pencereye düşsün
         ikinci = client._get("merkezler", {"il": "ankara"})
         self.assertEqual(ikinci, eski_yuk)
-        self.assertEqual(client.circuit_breaker_saglik_ozeti(), {"durum": "acik"})
 
-        time.sleep(0.2)  # arka plan yenileme denemesinin bitmesini bekle
+        # Devrenin açılması, arka planda asenkron çalışan yenileme
+        # denemesinin başarısız olmasına bağlı; sabit bir sleep'e
+        # güvenmek yerine deterministik olarak (en fazla ~2 sn) bekliyoruz.
+        durum = None
+        for _ in range(100):
+            durum = client.circuit_breaker_saglik_ozeti()
+            if durum == {"durum": "acik"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(durum, {"durum": "acik"})
+
         ucuncu = client._get("merkezler", {"il": "ankara"})
         self.assertEqual(ucuncu, eski_yuk)  # devre açık: hâlâ eski veri
 

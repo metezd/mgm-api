@@ -117,6 +117,22 @@ API tarafından döndürülen her HTTP yanıtı, istemciyi bilgilendirmek amacı
 - `mgm_circuit_breaker_state` 0=kapalı, 1=yarı-açık, 2=açık. Her scrape'te `mgm.circuit_breaker_saglik_ozeti()`'nden okunur.
 - `mgm_rate_limit_rejected_total` 429 ile reddedilen istek sayısı.
 
+## Loglama
+
+Varsayılan olarak `INFO` seviyesinde, insan-okur (`text`) formatta loglanır. `LOG_LEVEL` ve `LOG_FORMAT` env değişkenleriyle ayarlanır:
+
+```bash
+LOG_LEVEL=WARNING   # gürültüyü azaltmak için üretimde
+LOG_FORMAT=json     # Render/Datadog gibi log toplayıcılarda alan bazlı sorgulama için
+```
+
+**Request correlation ID:** Her isteğe bir kimlik atanır (`g.request_id`) ve **her log satırına** eklenir — eşzamanlı isteklerin log satırları artık birbirine karışmaz, aynı isteğe ait tüm satırlar tek bir ID ile filtrelenebilir. Yanıtta `X-Request-ID` header'ı olarak da döner. İstemci kendi `X-Request-ID` header'ını gönderirse (ör. bir upstream proxy/gateway'in ürettiği izleme ID'si) o kullanılır — ama yalnızca `^[A-Za-z0-9_-]{1,64}$` desenine uyuyorsa; uymuyorsa (log injection girişimi, aşırı uzun değer vb.) sessizce reddedilip sunucu tarafında üretilen bir ID kullanılır. Flask request context'i olmayan yerlerde (ör. `mgm_client`'ın arka plan yenileme thread'i) `request_id` `-` olarak görünür.
+
+```bash
+curl -i "http://127.0.0.1:5000/hava-durumu/Istanbul" | grep -i x-request-id
+# X-Request-ID: 1d25622452ca4c2d
+```
+
 ## Deploy (Render)
 
 Repo'daki `render.yaml` Blueprint'i, web servisini ve Redis uyumlu bir Key

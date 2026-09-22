@@ -173,7 +173,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import SplitResult
 
 import requests  # noqa: F401
-from flask import Flask, Response, g, jsonify, request
+from flask import Flask, Response, g, has_request_context, jsonify, request
 from flask_compress import Compress
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, ValidationError
@@ -205,6 +205,48 @@ from mgm_client import MGMWeather, MGMWeatherError, turkiye_illeri
 from weather_provider import MGMAdapter, WeatherProvider
 
 app = Flask(__name__)
+
+# Bu çağrı olmadan logger.info() çağrıları varsayılan 
+# Python davranışı gereği yutar. yalnızca warning stderr'e düşer. 
+# basicConfig() burada dışarıdan ayrı bir logging
+# yapılandırması yapılmadıkça uygulamanın hiçbir şeyi loglamıyormuş gibi
+# görünmesini engeller. LOG_LEVEL ile seviyesi ayarlanabilir
+
+class _RequestIdFiltresi(logging.Filter):
+    """Her log kaydına aktif isteğin `request_id`'sini ekler. Flask
+    request context'i olmayan yerlerde (ör. mgm_client'ın arka plan
+    yenileme thread'i, uygulama başlangıcı) "-" ile işaretlenir."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = g.request_id if has_request_context() and "request_id" in g else "-"
+        return True
+
+
+class _JsonFormatter(logging.Formatter):
+    """LOG_FORMAT=json için yapılandırılmış tek satırlık JSON log çıktısı."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "zaman": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "seviye": record.levelname,
+            "logger": record.name,
+            "mesaj": record.getMessage(),
+            "requestId": getattr(record, "request_id", "-"),
+        }
+        if record.exc_info:
+            payload["hata"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+_log_handler = logging.StreamHandler()
+_log_handler.addFilter(_RequestIdFiltresi())
+if os.getenv("LOG_FORMAT", "text").strip().lower() == "json":
+    _log_handler.setFormatter(_JsonFormatter())
+else:
+    _log_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s")
+    )
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), handlers=[_log_handler])
 logger = logging.getLogger(__name__)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -271,7 +313,12 @@ _mgm_istemcisi = MGMWeather(
 )
 mgm: WeatherProvider = MGMAdapter(_mgm_istemcisi)
 CORS_ALLOW_ORIGIN = os.getenv("APP_CORS_ALLOW_ORIGIN", "*")
-
+# Virgülle ayrılmış whitelist desteği: "https://a.com, https://b.com".
+# "*" (varsayılan) tüm kaynaklara izin verir — genel/salt-okunur bir hava
+# durumu API'si için makul bir varsayılandır (Authorization header'ı
+# çerezler gibi zımnen taşınmaz, CSRF benzeri bir risk oluşturmaz), ama
+# üretimde belirli domain'lere kilitlemek isteyenler için whitelist modu
+# aşağıda uygulanır.
 CORS_ORIGIN_WHITELIST: frozenset[str] | None = (
     None
     if CORS_ALLOW_ORIGIN.strip() == "*"
@@ -393,6 +440,8 @@ def _rate_limit_kontrol(
 FAVORI_MAX_KAYIT = int(os.getenv("APP_FAVORI_MAX_KAYIT", "30"))
 FAVORI_TTL_SANIYE = int(os.getenv("APP_FAVORI_TTL_SANIYE", str(90 * 24 * 3600)))
 FAVORI_LISTE_ID_REGEX = re.compile(r"^[A-Za-z0-9_-]{3,64}$")
+
+_REQUEST_ID_DESENI = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 FAVORI_SORGU_MAX_UZUNLUK = 100
 
 
@@ -990,6 +1039,8 @@ def _istasyon_ve_konum_getir(
 @app.before_request
 def istek_zamanlayici():
     g.metrik_baslangic = time.monotonic()
+    gelen_id = request.headers.get("X-Request-ID", "")
+    g.request_id = gelen_id if _REQUEST_ID_DESENI.match(gelen_id) else uuid.uuid4().hex[:16]
 
 
 def _istemci_ip() -> str:
@@ -1074,6 +1125,8 @@ def guvenlik_ve_cors_headerlari(response):
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
+    if request_id := getattr(g, "request_id", None):
+        response.headers["X-Request-ID"] = request_id
 
     if hasattr(g, "rl_limit"):
         response.headers["X-RateLimit-Limit"] = str(g.rl_limit)

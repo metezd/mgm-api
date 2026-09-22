@@ -6,6 +6,45 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- **Loglama (devamı) — request correlation ID + JSON format:**
+  1. Her isteğe bir `request_id` atanır (`g.request_id`, `istek_zamanlayici()`
+     hook'unda) ve **her log satırına** eklenir (`_RequestIdFiltresi`) —
+     eşzamanlı isteklerin log satırları artık birbirine karışmaz.
+     Yanıtta `X-Request-ID` header'ı olarak döner. İstemcinin kendi
+     `X-Request-ID`'si (ör. bir gateway'in ürettiği izleme ID'si)
+     `^[A-Za-z0-9_-]{1,64}$` desenine uyuyorsa kullanılır; uymuyorsa
+     (log injection girişimi, aşırı uzun değer) sessizce reddedilip
+     sunucu tarafında üretilen bir ID kullanılır. Flask request
+     context'i olmayan yerlerde (mgm_client'ın arka plan yenileme
+     thread'i gibi) `request_id` `-` görünür.
+  2. `LOG_FORMAT=json` ile yapılandırılmış (tek satır JSON) log çıktısı
+     eklendi (`_JsonFormatter`) — Render/Datadog gibi log
+     toplayıcılarda alan bazlı sorgulama/filtreleme mümkün olur.
+     Varsayılan `text` (insan-okur) formatta kalır.
+  7 yeni test (`TestRequestId`). 399/399 test geçiyor. Detaylar:
+  `docs/development.md`.
+
+- **Loglama:** İki somut boşluk kapatıldı.
+  1. `logging.basicConfig()` artık `app.py`'nin başında çağrılıyor
+     (`LOG_LEVEL` env değişkeniyle ayarlanabilir, varsayılan `INFO`).
+     Önceden hiçbir yerde çağrılmadığı için `logger.info(...)`
+     çağrıları (cache hit/miss, arka plan yenileme, "İstek atılıyor"
+     gibi ~28 gözlemlenebilirlik sinyali) Python'ın varsayılan
+     davranışı gereği sessizce yutuluyordu — yalnızca warning/error
+     görünüyordu. Bu arada iki testte (`TestStaleWhileRevalidate`,
+     `TestCircuitBreaker`) zaten var olan, sabit `time.sleep()`'e
+     dayanan kırılgan (flaky) senkronizasyon da bulunup deterministik
+     polling'e çevrildi (basicConfig'in log yazma maliyeti timing'i
+     kaydırınca daha sık tetikleniyordu).
+  2. `api/alerts.py`'de webhook hata loglarına artık ham `webhookUrl`
+     değil `_webhook_url_maskele()` ile maskelenmiş hali yazılıyor —
+     yalnızca scheme+host görünür, path/query tamamen gizlenir (Slack/
+     Discord gibi birçok sağlayıcı secret/token'ı path içine gömer,
+     sadece query string maskelemek yetersiz kalırdı).
+  5 yeni test (`tests/test_alerts_webhook.py`, gerçek log çıktısında
+  secret'ın hiç görünmediğini `assertLogs` ile doğruluyor). 392/392
+  test geçiyor.
+
 - Ölü kod temizliği: kök dizindeki eski düz dosya `mgm_client.py`
   silindi. `mgm_client/` paketine bölünme çoktan tamamlanmıştı
   (bkz. `2ce3d20` "tek dosyadan cok dosyali pakete bolundu"), Python

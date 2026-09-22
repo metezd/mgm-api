@@ -19,6 +19,23 @@ class AlertWebhookError(Exception):
     pass
 
 
+def _webhook_url_maskele(url: str) -> str:
+    """Loglarda webhook URL'sini güvenli biçimde kısaltır: yalnızca
+    scheme+host(+port) gösterilir, path/query/fragment TAMAMEN
+    gizlenir. Yalnızca query string'i maskelemek yeterli değildir —
+    Slack (`/services/T000/B000/XXXXX`) ve Discord
+    (`/api/webhooks/ID/TOKEN`) gibi birçok sağlayıcı secret/token'ı
+    path içine gömer; bu yüzden path de dahil her şey `***` ile
+    değiştirilir."""
+    try:
+        parcalar = urlsplit(url)
+        host = parcalar.hostname or "?"
+        port_eki = f":{parcalar.port}" if parcalar.port else ""
+        return f"{parcalar.scheme}://{host}{port_eki}/***"
+    except ValueError:
+        return "***"
+
+
 def parse_webhook_url(webhook_url: str, max_length: int, allowed_ports: set[int]) -> SplitResult:
     if len(webhook_url) > max_length:
         raise AlertWebhookError(f"'webhookUrl' en fazla {max_length} karakter olabilir.")
@@ -134,7 +151,12 @@ def send_webhook(
                 retryable = response.status_code in {408, 425, 429} or response.status_code >= 500
             except requests.RequestException as exc:
                 retryable = True
-                logger.warning("Webhook denemesi başarısız (%s, deneme %d): %s", alert["webhookUrl"], attempt, exc)
+                logger.warning(
+                    "Webhook denemesi başarısız (%s, deneme %d): %s",
+                    _webhook_url_maskele(alert["webhookUrl"]),
+                    attempt,
+                    exc,
+                )
             finally:
                 if response is not None:
                     response.close()
@@ -142,6 +164,8 @@ def send_webhook(
                 return False
             time.sleep(retry_backoff * (2 ** (attempt - 1)))
     except (AlertWebhookError, ValueError) as exc:
-        logger.warning("Webhook gönderilemedi (%s): %s", alert["webhookUrl"], exc)
+        logger.warning(
+            "Webhook gönderilemedi (%s): %s", _webhook_url_maskele(alert["webhookUrl"]), exc
+        )
         return False
     return False
