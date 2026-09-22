@@ -206,8 +206,8 @@ from weather_provider import MGMAdapter, WeatherProvider
 
 app = Flask(__name__)
 
-# Bu çağrı olmadan logger.info() çağrıları varsayılan 
-# Python davranışı gereği yutar. yalnızca warning stderr'e düşer. 
+# Bu çağrı olmadan logger.info() çağrıları varsayılan
+# Python davranışı gereği yutar. yalnızca warning stderr'e düşer.
 # basicConfig() burada dışarıdan ayrı bir logging
 # yapılandırması yapılmadıkça uygulamanın hiçbir şeyi loglamıyormuş gibi
 # görünmesini engeller. LOG_LEVEL ile seviyesi ayarlanabilir
