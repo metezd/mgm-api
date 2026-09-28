@@ -237,7 +237,7 @@ class TestE2ECacheKatmanlari(_E2ETabani):
 
     def test_stale_pencerede_es_zamanli_istekler_tek_yenileme_yapar(self):
         # Upstream'e gerçekçi bir gecikme veriyoruz: yenileme sürerken gelen
-        # eşzamanlı istekler tek yenilemeye toplanmalı. Gecikmesiz sahte 
+        # eşzamanlı istekler tek yenilemeye toplanmalı. Gecikmesiz sahte
         # session ile bu test zamanlamaya bağlı kırılır: _cached_get
         # stale kaydı okuduktan sonra _renew_try_lock'a gelene kadar başka bir
         # thread'in yenilemesi bitip kilidi bırakabiliyor

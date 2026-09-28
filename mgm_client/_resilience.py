@@ -119,7 +119,7 @@ class _KaynakDurumu:
 class _KaynakSagligi:
     """Dış kaynakların (MGM, Open-Meteo, Nominatim, ...) pasif sağlık izleyicisi.
 
-    Aktif yoklama yapmaz: yalnızca gerçek trafiğin sonucunu kaydeder. 
+    Aktif yoklama yapmaz: yalnızca gerçek trafiğin sonucunu kaydeder.
     Bu yüzden hiç istek atılmamış bir kaynak "bilinmiyor" görünür.
 
     Kaynak durumu:
