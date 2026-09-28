@@ -57,6 +57,38 @@ konteyner içinde kalır; kalıcı olarak saklamak isterseniz Grafana'daki
 "Export" ile JSON'u tekrar `monitoring/grafana/dashboards/mgm-api.json`
 dosyasına yazın.
 
+## Kaynak Sağlık Metrikleri
+
+Dış kaynaklar `kaynak` etiketiyle ayrı ayrı izlenir. Aynı bilgi JSON olarak `GET /health/kaynaklar`'da da bulunur
+
+| Metrik | Tür | Anlamı |
+|---|---|---|
+| `mgm_source_requests_total{kaynak,sonuc}` | Counter | Ağa giden gerçek isteklerin sonucu (`sonuc`: `ok` \| `hata`); cache isabetleri sayılmaz |
+| `mgm_source_request_duration_seconds{kaynak}` | Histogram | Gerçek isteklerin süresi |
+| `mgm_source_up{kaynak}` | Gauge | Son isteğin sonucu (1 başarılı, 0 hata) |
+| `mgm_source_last_success_timestamp_seconds{kaynak}` | Gauge | Son başarılı isteğin unix zamanı |
+
+Örnek PromQL sorguları:
+
+```promql
+# Kaynak bazında hata oranı (5 dk)
+sum by (kaynak) (rate(mgm_source_requests_total{sonuc="hata"}[5m]))
+  / sum by (kaynak) (rate(mgm_source_requests_total[5m]))
+
+# Kaynak bazında p95 gecikme
+histogram_quantile(0.95, sum by (le, kaynak) (rate(mgm_source_request_duration_seconds_bucket[5m])))
+
+# 15 dakikadır başarılı istek almayan kaynak
+time() - mgm_source_last_success_timestamp_seconds > 900
+```
+
+Notlar: `mgm_source_up` yalnızca **son isteğin** sonucudur, tek başına
+alarm için gürültülüdür; alarm için hata oranı ya da son başarı zamanı
+daha güvenilirdir. Trafik almayan bir kaynak için seri hiç oluşmaz
+(`bilinmiyor` durumu yalnızca `/health/kaynaklar`'da görünür), bu yüzden
+`absent(...)` tabanlı alarmlar yanlış pozitif verebilir. Bu metrikler henüz hazır
+Grafana dashboard'unda yer almıyor.
+
 ## Render/üretimde kullanma
 
 Bu compose dosyası yerel geliştirme/demo amaçlıdır. Render gibi bir

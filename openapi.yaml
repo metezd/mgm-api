@@ -978,6 +978,27 @@ paths:
               schema:
                 $ref: "#/components/schemas/SaglikDurumu"
 
+  /health/kaynaklar:
+    get:
+      tags: [durum]
+      summary: Dış kaynak sağlığı
+      description: >
+        MGM, Open-Meteo, Nominatim, İBB, sunrise-sunset ve Piri Reis için
+        **pasif** sağlık özeti: gerçek trafikte (önbelleğe takılmayıp ağa giden)
+        isteklerin sonucu kaynak bazında izlenir, aktif yoklama yapılmaz. Hiç
+        istek atılmamış kaynak `bilinmiyor` görünür. Hata mesajı döndürülmez,
+        yalnızca hata türü (istisna sınıfı ya da `http_<kod>`).
+        Bilgilendirme amaçlıdır: kaynaklar bozuk olsa bile **her zaman 200**
+        döner (`durum: degraded`) ve rate limit'e tabi değildir. Yük dengeleyici
+        probu olarak `/health` kullanılmalıdır.
+      responses:
+        "200":
+          description: Kaynak sağlık özeti
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KaynakSagligi"
+
   /metrics:
     get:
       tags: [durum]
@@ -1440,6 +1461,43 @@ components:
         redis: { type: string, enum: [ok, hata, skip], example: skip }
         circuit_breaker: { type: string, enum: [kapali, acik, yari-acik], example: kapali }
         hata: { type: string, nullable: true }
+
+    KaynakDurumu:
+      type: object
+      properties:
+        durum:
+          type: string
+          enum: [bilinmiyor, ok, kararsiz, hata]
+          description: >
+            bilinmiyor: hiç gerçek istek yok; ok: son istek başarılı;
+            kararsiz: eşiğin altında ardışık hata; hata: `MGM_KAYNAK_SAGLIK_HATA_ESIGI`
+            veya daha fazla ardışık hata.
+          example: ok
+        son_basarili: { type: string, format: date-time, nullable: true, example: "2026-09-28T09:15:02Z" }
+        son_basarili_yas_saniye: { type: integer, nullable: true, example: 42 }
+        son_hata: { type: string, format: date-time, nullable: true }
+        son_hata_turu: { type: string, nullable: true, example: ConnectTimeout }
+        ardisik_hata: { type: integer, example: 0 }
+        basarili_toplam: { type: integer, example: 128 }
+        hata_toplam: { type: integer, example: 3 }
+        son_gecikme_ms: { type: number, nullable: true, example: 84.2 }
+        ortalama_gecikme_ms: { type: number, nullable: true, example: 91.7 }
+
+    KaynakSagligi:
+      type: object
+      properties:
+        basarili: { type: boolean }
+        durum: { type: string, enum: [ok, degraded], example: ok }
+        servis: { type: string, example: hava-durumu }
+        hatali_kaynaklar:
+          type: array
+          items: { type: string }
+          example: []
+        kaynaklar:
+          type: object
+          description: "Anahtarlar: mgm, open-meteo, nominatim, ibb, sunrise-sunset, piri-reis"
+          additionalProperties:
+            $ref: "#/components/schemas/KaynakDurumu"
 
     HataYaniti:
       type: object

@@ -44,6 +44,40 @@ MGM servisinin art arda hata döndürdüğü durumlarda sistemi korumak için De
 * **Önbellek Etkileşimi (Önemli):** Devre kesici **yalnızca ağ isteklerini engeller**, önbellek katmanının önüne geçmez. Devre açıkken önbellekte SWR kapsamında bayat veri varsa, bu veri istemciye sunulmaya devam eder. Arka plandaki gereksiz MGM istekleri kesilmiş olur. Önbellekte veri yoksa istek bekletilmeden reddedilir.
 * **İzleme:** Sistem durumu `GET /health` uç noktasındaki `circuit_breaker` alanından (`kapali` | `acik` | `yari-acik`) takip edilebilir.
 
+## Kaynak Sağlığı (`GET /health/kaynaklar`)
+
+Devre kesici yalnızca MGM'yi korur ve istek akışını keser. Açık bir devre "MGM
+sorunlu" der ama Open-Meteo, Nominatim gibi diğer kaynakların durumu hakkında
+bir şey söylemez. `GET /health/kaynaklar` her dış kaynağı **ayrı ayrı** gösterir:
+`mgm`, `open-meteo`, `nominatim`, `ibb`, `sunrise-sunset`, `piri-reis`.
+
+* **Pasif izleme:** Aktif yoklama (probe) yapılmaz; yalnızca gerçek trafikte
+  önbelleğe takılmayıp ağa giden isteklerin sonucu kaydedilir. SWR arka plan
+  yenilemeleri de dahildir, cache isabetleri değildir. Bu yüzden hiç istek
+  atılmamış bir kaynak `bilinmiyor` görünür (ör. yeni başlamış bir process).
+* **Durumlar:** `ok` (son istek başarılı), `kararsiz` (1 ile eşik-1 arası ardışık hata),
+  `hata` (`MGM_KAYNAK_SAGLIK_HATA_ESIGI` ve üzeri ardışık hata, varsayılan 3).
+  Bir başarı ardışık hata sayacını sıfırlar; toplam sayaçlar korunur.
+* **Alanlar:** `son_basarili` / `son_hata` (UTC ISO 8601), `son_basarili_yas_saniye`,
+  `son_hata_turu`, `ardisik_hata`, `basarili_toplam`, `hata_toplam`, `son_gecikme_ms`,
+  `ortalama_gecikme_ms` (üstel hareketli ortalama, α = 0.2).
+* **Hata mesajı döndürülmez.** Yalnızca tür (`ConnectTimeout`, `http_503` gibi)
+  saklanır: mesajlar URL ve sorgu parametreleri (ör. Nominatim'de kullanıcının
+  koordinatları) içerebilir ve uç nokta kimlik doğrulamasızdır.
+* **Probe olarak kullanmayın.** Kaynaklar bozuk olsa bile HTTP 200 döner
+  (`durum: degraded`, `hatali_kaynaklar` listesi). Üçüncü taraf kesintisinin
+  servisi gereksiz yere yeniden başlatmasını önlemek için yük dengeleyici/orkestratör
+  probu `GET /health` olmalıdır. Uç nokta rate limit ve ETag'den muaftır.
+* **Devre kesiciyle ilişkisi:** Devre açıkken ağa gitmeden reddedilen istekler
+  kaynak hatası sayılmaz (kaynak hakkında yeni bilgi yoktur); bu durum zaten
+  `circuit_breaker` alanında görünür.
+* **Piri Reis ayrı kaynaktır.** `pirireis.mgm.gov.tr` farklı bir host olduğu için
+  MGM'den bağımsız izlenir. (Önceki sürümlerde cache anahtarı `mgm` etiketi
+  taşıyordu; etiket değiştiği için deploy sonrası Piri Reis verisi bir kez yeniden
+  çekilir, kalıcı bir etkisi yoktur.)
+
+Prometheus metrikleri için [monitoring.md](monitoring.md#kaynak-sağlık-metrikleri).
+
 ## Dinamik TTL Yapılandırması (`guncel_durum`, Deneysel)
 
 MGM istasyon ölçümleri, gözlemsel olarak genellikle her saat başını birkaç dakika geçe (örn. 14:08, 15:07) güncellenmektedir. Bu döngüyü yakalamak için yalnızca `guncel_durum()` uç noktasında zamana duyarlı dinamik TTL uygulanır (İl listesi, tahmin ve geocoding verileri statik `MGM_CACHE_TTL` kullanmaya devam eder).
@@ -161,6 +195,7 @@ Hata oranları yükseldiğinde MGM sunucularına giden yükü kesmek için kulla
 | `MGM_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` |
 | `MGM_CIRCUIT_BREAKER_WINDOW_SECONDS` | `30` |
 | `MGM_CIRCUIT_BREAKER_OPEN_SECONDS` | `60` |
+| `MGM_KAYNAK_SAGLIK_HATA_ESIGI` | `3` (kaynağın `hata` sayılması için ardışık hata sayısı, bkz. [Kaynak Sağlığı](#kaynak-sağlığı-get-healthkaynaklar)) |
 
 ### 4. CORS ve Güvenlik
 

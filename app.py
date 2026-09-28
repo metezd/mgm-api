@@ -48,16 +48,15 @@ Uç noktalar:
            basınç, hadise).
 
     GET /polen/<il>?ilce=<ilce>
-        -> Anlık polen/alerji indeksi (çimen, huş, kızılağaç, pelin otu,
+        -> Anlık polen ve alerji indeksi (çimen, huş, kızılağaç, pelin otu,
            zeytin, ambrosia). Open-Meteo Air Quality API (CAMS Avrupa)
            üzerinden. Sezon dışı/kapsam dışı türler için "Veri Yok"
-           döner. Seviyeler (Düşük/Orta/Yüksek/Çok Yüksek) yaklaşık
-           sınıflandırmadır, kesin klinik eşik değildir.
+           döner. Seviyeler yaklaşık olaraktır
 
     GET /deniz/<il>?ilce=<ilce>&lat=&lon=
         -> Deniz suyu sıcaklığı ÖNCELİKLE MGM'nin Piri Reis istasyon verisinden,
            başarısız olursa Open-Meteo Marine API'sinden gelir
-           dalga verisi her zaman Open-Meteo'dan gelir (Piri Reis kaynağında yok).
+           dalga verisi her zaman Open-Meteo'dan gelir (Piri Reiste yok).
            "kaynaklar" alanı hangi verinin nereden geldiğini gösterir.
            Kıyıya daha yakın bir koordinat için isteğe bağlı ?lat=&lon= ile override
            edilebilir. İkisi de kapsam dışıysa tüm alanlar null döner
@@ -66,25 +65,18 @@ Uç noktalar:
     GET /map/geojson
         -> Türkiye il sınırları (GeoJSON) + MGM son durum sıcaklıkları
            birleştirilmiş, doğrudan Leaflet/Mapbox'a beslenebilecek
-           tek bir FeatureCollection. Yanıt "basarili" sarmalayıcısı
-           OLMADAN saf GeoJSON olarak döner
+           tek bir FeatureCollection.
 
     GET /don-uyarisi/<il>?ilce=<ilce>
         -> Tarımsal don/kırağı riski: 5 günlük tahminin en düşük
-           sıcaklığına dayalı sezgisel risk sınıflandırması (Kırağı
-           Riski / Hafif-Orta-Kuvvetli-Çok Kuvvetli Don) + düşük
+           sıcaklığına dayalı sezgisel risk sınıflandırması + düşük
            rüzgar/yüksek nem koşullarında kırağı uygunluk işareti.
-           MGM'nin resmi bir don uyarı ürünü DEĞİLDİR, türetilmiş bir
-           göstergedir.
 
     GET /akilli-ozet/<il>?ilce=<ilce>
         -> Akıllı Özetleme (NLP): güncel durum + 5 günlük tahmini kural
-           tabanlı (rule-based) doğal dil üretimiyle tek bir Türkçe özet
-           paragrafına ("ozet"), öne çıkan noktalara ("anahtarNoktalar"),
-           uyarılara ("uyarilar": sıcak/soğuk/rüzgar eşiği aşımı) ve basit
-           bir sıcaklık trendine ("trend") çevirir. Bir dil modeli/ML
-           KULLANMAZ, şablon tabanlıdır; MGM'nin resmi bir metin ürünü
-           değildir.
+           tabanlıdoğal dil üretimiyle tek bir Türkçe özet
+           paragrafına ("ozet"), öne çıkan noktalara, uyarılara ve basit
+           bir sıcaklık trendine ("trend") çevirir.
 
     POST /favoriler
         -> Yeni public liste_id ile manage_token ve read_token üretir.
@@ -100,18 +92,15 @@ Uç noktalar:
     GET /favoriler/<liste_id>
         -> Listedeki tüm sorgular için hava durumunu tek istekte döner
            Authorization: Bearer <read_token> gerekir.
-           (/toplu ile aynı akıllı çözümleyici + paralel yürütme,
-           kısmi başarısızlığa toleranslı).
+
 
     GET /favoriler/<liste_id>/liste
         -> Hava durumu çekmeden, yalnızca kayıtlı sorguları döner
            (hafif, liste yönetimi arayüzleri için). read_token gerekir.
 
-    Kalıcılık: REDIS_URL tanımlıysa favoriler Redis'te tutulur (yeniden
-    başlatmalarda kalıcı, worker/instance'lar arası paylaşılır,
-    APP_FAVORI_TTL_SANIYE varsayılan 90 gün hareketsizlikte düşer).
-    Redis yoksa süreç-içi belleğe düşülür. Yalnızca tek worker/geliştirme
-    ortamı için uygundur, süreç yeniden başladığında kaybolur.
+    Kalıcılık: REDIS_URL tanımlıysa favoriler Redis'te tutulur.
+    Redis yoksa belleğe düşülür. Yalnızca tek worker/geliştirme
+    ortamı için uygundur
 
     POST /alerts/<liste_id>
         -> {"tur": "weather.temp_threshold", "il": "İstanbul",
@@ -119,12 +108,9 @@ Uç noktalar:
            gövdesiyle bir alert kaydı ekler. manage_token gerekir.
            Desteklenen "tur" değerleri:
            weather.temp_threshold, weather.wind_gust_exceeded,
-           weather.rain_threshold (eşik bazlı, koşul doğru olduğu her
-           kontrolde tetiklenir), weather.rain_started,
-           weather.rain_stopped, weather.warning_issued (olay bazlı,
-           yalnızca durum değişiminde bir kez tetiklenir),
-           weather.frost_risk (eşik bir don seviyesi adıdır, varsayılan
-           "Hafif Don"). Liste başına en fazla APP_ALERT_MAX_KAYIT
+           weather.rain_threshold, weather.rain_started,
+           weather.rain_stopped, weather.warning_issued,
+           weather.frost_risk. Liste başına en fazla APP_ALERT_MAX_KAYIT
            kayıt.
 
     DELETE /alerts/<liste_id>/<alert_id>
@@ -136,20 +122,19 @@ Uç noktalar:
     POST /api/v1/alerts/check
         -> Authorization: Bearer <CRON_SECRET> header'ıyla korunur.
            Kayıtlı tüm alertleri değerlendirir, tetiklenenler için
-           webhookUrl'e POST atar. Sunucu içinde zamanlayıcı YOKTUR,
-           bu uç nokta dışarıdan periyodik çağrılmalıdır. Test
+           webhookUrl'e POST atar. Sunucu içinde zamanlayıcı yok,
+           uç nokta dışarıdan periyodik çağrılmalıdır. Test
            amaçlı ENABLE_INTERNAL_SCHEDULER=true ile isteğe bağlı bir
            APScheduler tabanlı iç zamanlayıcı da açılabilir.
 
 Rate limiting:
-    IP başına APP_RATE_LIMIT_MAX_REQUESTS (varsayılan 60) istek /
-    APP_RATE_LIMIT_WINDOW_SECONDS (varsayılan 60sn). /map/geojson soğuk
+    IP başına APP_RATE_LIMIT_MAX_REQUESTS istek /
+    APP_RATE_LIMIT_WINDOW_SECONDS saniye içinde. /map/geojson soğuk
     cache'te 81 il için paralel istek attığından ayrı ve daha sıkı bir
-    limite (APP_MAP_GEOJSON_RATE_LIMIT_MAX_REQUESTS, varsayılan 10) tabidir.
+    limite tabidir.
     Redis yapılandırılmışsa (REDIS_URL) sayaç Redis'te tutulur ve tüm
     worker/instance'lar arasında paylaşılır. Redis yoksa/erişilemezse
-    süreç-içi belleğe düşülür (tek worker'da doğru, çoklu worker'da
-    worker başına ayrı sayılır).
+    belleğe düşülür
 
 Örnek:
     curl "http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy"
@@ -279,6 +264,7 @@ _mgm_istemcisi = MGMWeather(
     circuit_breaker_open_seconds=float(
         os.getenv("MGM_CIRCUIT_BREAKER_OPEN_SECONDS", "60")
     ),
+    kaynak_saglik_hata_esigi=int(os.getenv("MGM_KAYNAK_SAGLIK_HATA_ESIGI", "3")),
     guncel_dinamik_ttl_aktif=os.getenv("MGM_GUNCEL_DINAMIK_TTL", "1") not in {"0", "false", "False"},
     guncel_sicak_pencere_baslangic_dk=int(
         os.getenv("MGM_GUNCEL_SICAK_PENCERE_BASLANGIC_DK", "5")
@@ -1067,7 +1053,7 @@ def istek_sinirlarini_kontrol_et():
 def rate_limit():
     if request.method == "OPTIONS":
         return None
-    if request.path in {"/health", "/docs", "/openapi.yaml", "/metrics"}:
+    if request.path in {"/health", "/health/kaynaklar", "/docs", "/openapi.yaml", "/metrics"}:
         return None
 
     ip = _istemci_ip()
@@ -1151,7 +1137,7 @@ def metrik_kaydet(response):
 
 # /health her zaman taze olmalı, /metrics her scrape'te değişir: bu
 # ikisinde ETag hesaplamak yalnızca gereksiz CPU/bellek maliyeti
-_ETAG_HARIC_YOLLAR = {"/health", "/metrics"}
+_ETAG_HARIC_YOLLAR = {"/health", "/health/kaynaklar", "/metrics"}
 
 
 @app.after_request
@@ -1544,6 +1530,26 @@ def health():
             ),
             503,
         )
+
+
+@app.get("/health/kaynaklar")
+def health_kaynaklar():
+    """Dış kaynakların (MGM, Open-Meteo, Nominatim, ...) pasif sağlık özeti.
+
+    Bilgilendirme amaçlıdır: her zaman 200 döner ve yük dengeleyici/orkestratör
+    probu olarak kullanılmamalı. Probe için `/health` kullanılır
+    """
+    kaynaklar = mgm.kaynak_saglik_ozeti()
+    hatali = sorted(ad for ad, kaynak in kaynaklar.items() if kaynak["durum"] == "hata")
+    return jsonify(
+        {
+            "basarili": True,
+            "durum": "degraded" if hatali else "ok",
+            "servis": "hava-durumu",
+            "hatali_kaynaklar": hatali,
+            "kaynaklar": kaynaklar,
+        }
+    )
 
 
 @app.get("/guncel/<il>")

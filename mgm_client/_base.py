@@ -27,6 +27,7 @@ from ._constants import (
     CIRCUIT_BREAKER_FAILURE_THRESHOLD,
     CIRCUIT_BREAKER_OPEN_SECONDS,
     CIRCUIT_BREAKER_WINDOW_SECONDS,
+    KAYNAK_SAGLIK_HATA_ESIGI,
     REDIS_CONNECT_TIMEOUT,
     REDIS_HEALTH_CHECK_INTERVAL,
     REDIS_SOCKET_TIMEOUT,
@@ -34,7 +35,7 @@ from ._constants import (
     logger,
 )
 from ._errors import MGMCircuitOpenError, MGMWeatherError
-from ._resilience import _CircuitBreaker, _InFlight
+from ._resilience import _CircuitBreaker, _InFlight, _KaynakSagligi
 
 
 @dataclass
@@ -50,6 +51,7 @@ class _MGMWeatherTemel:
     circuit_breaker_failure_threshold: int = CIRCUIT_BREAKER_FAILURE_THRESHOLD
     circuit_breaker_window_seconds: float = CIRCUIT_BREAKER_WINDOW_SECONDS
     circuit_breaker_open_seconds: float = CIRCUIT_BREAKER_OPEN_SECONDS
+    kaynak_saglik_hata_esigi: int = KAYNAK_SAGLIK_HATA_ESIGI
     guncel_dinamik_ttl_aktif: bool = True
     guncel_sicak_pencere_baslangic_dk: int = 5
     guncel_sicak_pencere_bitis_dk: int = 15
@@ -101,6 +103,7 @@ class _MGMWeatherTemel:
     _in_flight_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _lock_ttl: float = field(default=0.0, init=False)
     _circuit_breaker: _CircuitBreaker = field(default=None, init=False)  # type: ignore[assignment]
+    _kaynak_sagligi: _KaynakSagligi = field(default=None, init=False)  # type: ignore[assignment]
 
     BASE_URL = "https://servis.mgm.gov.tr/web"
     SUNRISE_URL = "https://api.sunrise-sunset.org/json"
@@ -155,6 +158,7 @@ class _MGMWeatherTemel:
             window_seconds=self.circuit_breaker_window_seconds,
             open_seconds=self.circuit_breaker_open_seconds,
         )
+        self._kaynak_sagligi = _KaynakSagligi(hata_esigi=self.kaynak_saglik_hata_esigi)
 
         retry = Retry(
             total=self.retry_total,
@@ -251,6 +255,7 @@ class _MGMWeatherTemel:
         bunu kullanır. Diğer tüm çağrılar statik `cache_ttl_seconds`'ta kalır.
         """
         ttl = self.cache_ttl_seconds if ttl_override is None else ttl_override
+        loader = self._izlenen_loader(key, loader)
         kayit = self._kayit_sec(key)
         if kayit is not None:
             payload, yazilma_zamani = kayit
@@ -269,6 +274,34 @@ class _MGMWeatherTemel:
         logger.info("Cache miss: %s", key)
         CACHE_SONUC_SAYAC.labels(sonuc="miss").inc()
         return self._yukle_singleton(key, loader)
+
+    @staticmethod
+    def _kaynak_from_key(key: str) -> str:
+        """`<namespace>:<versiyon>:<kaynak>:<digest>` anahtarından kaynak etiketi."""
+        parcalar = key.split(":")
+        return parcalar[-2] if len(parcalar) >= 4 else "bilinmiyor"
+
+    def _izlenen_loader(self, key: str, loader: Callable[[], Any]) -> Callable[[], Any]:
+        """Loader'ı, gerçek upstream isteğinin sonucunu kaynak
+        sağlığına kaydedecek şekilde sarar. Hem bloklayıcı yükleme hem SWR arka
+        plan yenilemesi bu sarmalayıcıdan geçer"""
+        kaynak = self._kaynak_from_key(key)
+
+        def izlenen() -> Any:
+            baslangic = time.monotonic()
+            try:
+                sonuc = loader()
+            except MGMCircuitOpenError:
+                raise  # ağa hiç gidilmedi: kaynak hakkında yeni bilgi yok
+            except MGMWeatherError as exc:
+                self._kaynak_sagligi.hata(
+                    kaynak, time.monotonic() - baslangic, self._kaynak_sagligi.hata_turu(exc)
+                )
+                raise
+            self._kaynak_sagligi.basari(kaynak, time.monotonic() - baslangic)
+            return sonuc
+
+        return izlenen
 
     def _swr_aktif(self) -> bool:
         return self.stale_while_revalidate_seconds > 0
@@ -456,10 +489,12 @@ class _MGMWeatherTemel:
             if resp.status_code != 200:
                 self._circuit_breaker.basarisiz()
                 logger.warning("MGM servisinden hata kodu: %d (%s)", resp.status_code, url)
-                raise MGMWeatherError(
+                hata = MGMWeatherError(
                     f"MGM servisi beklenmeyen durum kodu döndürdü: {resp.status_code} "
                     f"({url})"
                 )
+                hata.durum_kodu = resp.status_code  # kaynak sağlığı: mesajsız sınıflandırma
+                raise hata
             try:
                 sonuc = resp.json()
             except ValueError as exc:
@@ -496,6 +531,8 @@ class _MGMWeatherTemel:
             return "ibb"
         if path.startswith("nominatim-"):
             return "nominatim"
+        if path.startswith("piri-reis"):
+            return "piri-reis"
         if path.startswith("gun-dogumu"):
             return "sunrise-sunset"
         return "mgm"
@@ -744,4 +781,9 @@ class _MGMWeatherTemel:
     def circuit_breaker_saglik_ozeti(self) -> dict[str, str]:
         """Circuit breaker durumunu döndürür: kapali|acik|yari-acik."""
         return {"durum": self._circuit_breaker.durum()}
+
+    def kaynak_saglik_ozeti(self) -> dict[str, dict[str, Any]]:
+        """Dış kaynakların pasif sağlık özeti:
+        durum bilinmiyor|ok|kararsiz|hata, son başarı/hata zamanı, gecikme."""
+        return self._kaynak_sagligi.ozet()
 

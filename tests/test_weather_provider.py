@@ -31,6 +31,7 @@ _METOD_ARGUMANLARI = {
     "harita_geojson": ((), {}),
     "circuit_breaker_saglik_ozeti": ((), {}),
     "redis_saglik_ozeti": ((), {}),
+    "kaynak_saglik_ozeti": ((), {}),
 }
 
 
@@ -92,7 +93,7 @@ class TestMGMAdapter(unittest.TestCase):
 
     def test_gercek_mgmweather_ile_uyumludur(self):
         # Sahte değil gerçek MGMWeather örneğiyle sarma — mgm_client'ın
-        # public API'sinin WeatherProvider'ın beklediği 23 metodun
+        # public API'sinin WeatherProvider'ın beklediği 24 metodun
         # hepsini (doğru isim/imza ile) sağladığını kanıtlar. Ağ
         # çağrısı yapılmaz, yalnızca metodların var olduğu doğrulanır.
         from mgm_client import MGMWeather

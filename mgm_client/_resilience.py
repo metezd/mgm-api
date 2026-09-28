@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import datetime as _dt
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from ._constants import (
+    KAYNAK_ISTEK_SAYAC,
+    KAYNAK_ISTEK_SURESI,
+    KAYNAK_SAGLIK_HATA_ESIGI,
+    KAYNAK_SON_BASARI_GAUGE,
+    KAYNAK_UP_GAUGE,
+    KAYNAKLAR,
+)
 
 
 @dataclass
@@ -91,3 +101,135 @@ class _CircuitBreaker:
             if time.monotonic() - self._acilma_zamani < self.open_seconds:
                 return "acik"
             return "yari-acik"
+
+
+@dataclass
+class _KaynakDurumu:
+    basarili_toplam: int = 0
+    hata_toplam: int = 0
+    ardisik_hata: int = 0
+    son_basarili: float | None = None  # unix zamanı
+    son_hata: float | None = None
+    son_hata_turu: str | None = None
+    son_gecikme_ms: float | None = None
+    ortalama_gecikme_ms: float | None = None  # üstel hareketli ortalama
+
+
+@dataclass
+class _KaynakSagligi:
+    """Dış kaynakların (MGM, Open-Meteo, Nominatim, ...) pasif sağlık izleyicisi.
+
+    Aktif yoklama yapmaz: yalnızca gerçek trafiğin sonucunu kaydeder. 
+    Bu yüzden hiç istek atılmamış bir kaynak "bilinmiyor" görünür.
+
+    Kaynak durumu:
+    - **bilinmiyor**: henüz hiç gerçek istek atılmadı.
+    - **ok**: son istek başarılı (ardışık hata yok).
+    - **kararsiz**: 1..(eşik-1) ardışık hata var.
+    - **hata**: `hata_esigi` veya daha fazla ardışık hata.
+
+    Devre kesiciden (`_CircuitBreaker`) bağımsızdır: o yalnızca MGM'yi korur
+    ve istek akışını keser, bu sınıf ise her kaynağı ayrı ayrı gözlemler ve
+    hiçbir isteği engellemez. Thread-safe'tir.
+
+    Hata mesajı SAKLANMAZ; yalnızca hata türü (istisna sınıfı adı ya da HTTP
+    kodu). Mesajlar URL/parametre (ör. kullanıcının koordinatları) içerebilir
+    ve bu bilgi kimlik doğrulamasız `/health/kaynaklar` ile dışarı çıkar.
+    """
+
+    hata_esigi: int = KAYNAK_SAGLIK_HATA_ESIGI
+    _EMA_ALFA = 0.2
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _durumlar: dict[str, _KaynakDurumu] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        for kaynak in KAYNAKLAR:
+            self._durumlar[kaynak] = _KaynakDurumu()
+
+    @staticmethod
+    def hata_turu(exc: BaseException) -> str:
+        """Hata mesajını sızdırmadan sınıflandırır: `http_503`, `ConnectTimeout`..."""
+        neden = exc.__cause__ or exc
+        kod = getattr(exc, "durum_kodu", None) or getattr(
+            getattr(neden, "response", None), "status_code", None
+        )
+        if kod:
+            return f"http_{kod}"
+        return type(neden).__name__
+
+    def basari(self, kaynak: str, sure_saniye: float) -> None:
+        simdi = time.time()
+        ms = sure_saniye * 1000.0
+        with self._lock:
+            d = self._durumlar.setdefault(kaynak, _KaynakDurumu())
+            d.basarili_toplam += 1
+            d.ardisik_hata = 0
+            d.son_basarili = simdi
+            self._gecikme_guncelle(d, ms)
+        KAYNAK_ISTEK_SAYAC.labels(kaynak=kaynak, sonuc="ok").inc()
+        KAYNAK_ISTEK_SURESI.labels(kaynak=kaynak).observe(sure_saniye)
+        KAYNAK_UP_GAUGE.labels(kaynak=kaynak).set(1)
+        KAYNAK_SON_BASARI_GAUGE.labels(kaynak=kaynak).set(simdi)
+
+    def hata(self, kaynak: str, sure_saniye: float, hata_turu: str) -> None:
+        simdi = time.time()
+        ms = sure_saniye * 1000.0
+        with self._lock:
+            d = self._durumlar.setdefault(kaynak, _KaynakDurumu())
+            d.hata_toplam += 1
+            d.ardisik_hata += 1
+            d.son_hata = simdi
+            d.son_hata_turu = hata_turu
+            self._gecikme_guncelle(d, ms)
+        KAYNAK_ISTEK_SAYAC.labels(kaynak=kaynak, sonuc="hata").inc()
+        KAYNAK_ISTEK_SURESI.labels(kaynak=kaynak).observe(sure_saniye)
+        KAYNAK_UP_GAUGE.labels(kaynak=kaynak).set(0)
+
+    def _gecikme_guncelle(self, d: _KaynakDurumu, ms: float) -> None:
+        d.son_gecikme_ms = round(ms, 1)
+        if d.ortalama_gecikme_ms is None:
+            d.ortalama_gecikme_ms = round(ms, 1)
+        else:
+            d.ortalama_gecikme_ms = round(
+                self._EMA_ALFA * ms + (1 - self._EMA_ALFA) * d.ortalama_gecikme_ms, 1
+            )
+
+    def _durum(self, d: _KaynakDurumu) -> str:
+        if d.basarili_toplam + d.hata_toplam == 0:
+            return "bilinmiyor"
+        if d.ardisik_hata == 0:
+            return "ok"
+        if d.ardisik_hata < self.hata_esigi:
+            return "kararsiz"
+        return "hata"
+
+    @staticmethod
+    def _iso(zaman: float | None) -> str | None:
+        if zaman is None:
+            return None
+        return (
+            _dt.datetime.fromtimestamp(zaman, tz=_dt.UTC)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+
+    def ozet(self) -> dict[str, dict[str, Any]]:
+        simdi = time.time()
+        with self._lock:
+            sonuc: dict[str, dict[str, Any]] = {}
+            for kaynak, d in self._durumlar.items():
+                sonuc[kaynak] = {
+                    "durum": self._durum(d),
+                    "son_basarili": self._iso(d.son_basarili),
+                    "son_basarili_yas_saniye": (
+                        None if d.son_basarili is None else int(simdi - d.son_basarili)
+                    ),
+                    "son_hata": self._iso(d.son_hata),
+                    "son_hata_turu": d.son_hata_turu,
+                    "ardisik_hata": d.ardisik_hata,
+                    "basarili_toplam": d.basarili_toplam,
+                    "hata_toplam": d.hata_toplam,
+                    "son_gecikme_ms": d.son_gecikme_ms,
+                    "ortalama_gecikme_ms": d.ortalama_gecikme_ms,
+                }
+            return sonuc

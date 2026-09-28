@@ -93,5 +93,5 @@ curl "[http://127.0.0.1:5000/hava-durumu/Istanbul?ilce=Bakirkoy](http://127.0.0.
 
 - [docs/development.md](docs/development.md)
 - [docs/resilience.md](docs/resilience.md)
-- [docs/monitoring.md](docs/monitoring.md) — hazır Prometheus + Grafana dashboard'u (`docker compose --profile monitoring up -d`)
+- [docs/monitoring.md](docs/monitoring.md)
 - [docs/endpoint.md](docs/endpoint.md)

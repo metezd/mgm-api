@@ -4,9 +4,9 @@ import logging
 import os
 
 try:
-    from prometheus_client import Counter
+    from prometheus_client import Counter, Gauge, Histogram
 except ImportError:  # pragma: no cover
-    class Counter:  # type: ignore[no-redef]
+    class _NoopMetric:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -15,6 +15,14 @@ except ImportError:  # pragma: no cover
 
         def inc(self, *args, **kwargs):
             pass
+
+        def set(self, *args, **kwargs):
+            pass
+
+        def observe(self, *args, **kwargs):
+            pass
+
+    Counter = Gauge = Histogram = _NoopMetric  # type: ignore[misc,assignment]
 
 logger = logging.getLogger("mgm_client")
 
@@ -39,6 +47,32 @@ CACHE_SONUC_SAYAC = Counter(
     "son-bilinen-iyi-değerden sunuldu)",
     ["sonuc"],
 )
+# Kaynak sağlığı: her dış servis ayrı izlenir
+KAYNAKLAR = ("mgm", "open-meteo", "nominatim", "ibb", "sunrise-sunset", "piri-reis")
+KAYNAK_SAGLIK_HATA_ESIGI = 3  # bu kadar ardışık hatadan sonra kaynak "hata" sayılır
+
+KAYNAK_ISTEK_SAYAC = Counter(
+    "mgm_source_requests_total",
+    "Dış kaynağa atılan gerçek (cache dışı) isteklerin sonucu",
+    ["kaynak", "sonuc"],  # sonuc: ok | hata
+)
+KAYNAK_ISTEK_SURESI = Histogram(
+    "mgm_source_request_duration_seconds",
+    "Dış kaynağa atılan gerçek isteklerin süresi",
+    ["kaynak"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+)
+KAYNAK_UP_GAUGE = Gauge(
+    "mgm_source_up",
+    "Kaynağa atılan SON isteğin sonucu (1: başarılı, 0: hata)",
+    ["kaynak"],
+)
+KAYNAK_SON_BASARI_GAUGE = Gauge(
+    "mgm_source_last_success_timestamp_seconds",
+    "Kaynağa atılan son başarılı isteğin unix zamanı",
+    ["kaynak"],
+)
+
 CACHE_KEY_NAMESPACE = "mgm-api"
 CACHE_KEY_VERSION = "v2"
 CACHE_KEY_MAX_LENGTH = 180

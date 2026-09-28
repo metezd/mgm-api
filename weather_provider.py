@@ -117,6 +117,9 @@ class WeatherProvider(abc.ABC):
     @abc.abstractmethod
     def redis_saglik_ozeti(self) -> dict[str, str]: ...
 
+    @abc.abstractmethod
+    def kaynak_saglik_ozeti(self) -> dict[str, dict[str, Any]]: ...
+
 
 class MGMAdapter(WeatherProvider):
     """`WeatherProvider` arayüzünü `MGMWeather` istemcisi üzerinden
@@ -197,6 +200,9 @@ class MGMAdapter(WeatherProvider):
 
     def redis_saglik_ozeti(self):
         return self._mgm.redis_saglik_ozeti()
+
+    def kaynak_saglik_ozeti(self):
+        return self._mgm.kaynak_saglik_ozeti()
 
     def __getattr__(self, name: str) -> Any:
         # WeatherProvider arayüzünde henüz yer almayan (ör. testlerde ya

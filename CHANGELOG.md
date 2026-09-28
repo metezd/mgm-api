@@ -6,6 +6,23 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- **Kaynak sağlığı — dış servislerin ayrı ayrı izlenmesi:**
+  1. `GET /health/kaynaklar`: MGM, Open-Meteo, Nominatim, İBB, sunrise-sunset ve
+     Piri Reis için pasif sağlık özeti (`durum`: bilinmiyor | ok | kararsiz | hata,
+     son başarı/hata zamanı, ardışık hata, gecikme). Yalnızca gerçek (cache dışı)
+     istekleri izler; aktif yoklama yapmaz. Her zaman 200 döner, rate limit ve
+     ETag'den muaftır. Hata **mesajı** döndürülmez, yalnızca tür (`http_503`,
+     `ConnectTimeout`): mesajlar kullanıcı koordinatı içerebilir.
+  2. Prometheus: `mgm_source_requests_total`, `mgm_source_request_duration_seconds`,
+     `mgm_source_up`, `mgm_source_last_success_timestamp_seconds` (`kaynak` etiketiyle).
+  3. Tek geçiş noktası: loader `MGMWeather._cached_get` içinde bir kez sarılır; 12
+     `session.get` noktasının hiçbirine dokunulmadı. Devre açıkken atlanan istekler
+     kaynak hatası sayılmaz.
+  4. `MGM_KAYNAK_SAGLIK_HATA_ESIGI` (varsayılan 3), `WeatherProvider.kaynak_saglik_ozeti()`.
+  5. **Düzeltme:** Piri Reis (`pirireis.mgm.gov.tr`) cache anahtarında `mgm`
+     etiketi taşıyordu; artık `piri-reis`. Deploy sonrası Piri Reis verisi bir kez
+     yeniden çekilir (kalıcı etkisi yok). Yeni test dosyası: `tests/test_kaynak_saglik.py`.
+
 - **Loglama (devamı) — request correlation ID + JSON format:**
   1. Her isteğe bir `request_id` atanır (`g.request_id`, `istek_zamanlayici()`
      hook'unda) ve **her log satırına** eklenir (`_RequestIdFiltresi`) —
