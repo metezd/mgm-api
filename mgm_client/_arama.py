@@ -11,6 +11,13 @@ from ._constants import _tr_normalize
 from ._errors import MGMWeatherError
 from .iller import TURKIYE_ILLERI
 
+# Nominatim'e sorulan ve cache anahtarına giren koordinatın ondalık basamağı.
+# Telefon GPS'i aynı yerde dururken bile 5.-7. basamakta oynar; ham float
+# anahtarla cache isabeti neredeyse hiç olmaz. 3 basamak ≈ 110 m: zoom=10
+# (il/ilçe) çözünürlüğü için yeterince ince, ilçe sınırında yanlış atama riski
+# ihmal edilebilir. Yan etki: üçüncü tarafa giden konum ~110 m hassasiyete iner.
+NOMINATIM_KOORDINAT_BASAMAK = 3
+
 
 class _AramaMixin:
     """Serbest metin/koordinat cozumleme, birlesik hava_durumu()."""
@@ -287,8 +294,15 @@ class _AramaMixin:
         kılıyor. Bu proje ölçeğinde sorun değil, yüksek trafikli bir deploy'da kendi Nominatim
         instance'ınızı barındırmanız ya da ücretli bir alternatif kullanmanız gerekir.
 
+        Koordinat `NOMINATIM_KOORDINAT_BASAMAK` basamağa yuvarlanır (hem istekte
+        hem cache anahtarında), böylece GPS titremesi aynı kayda düşer. "Adres
+        bulunamadı" sonucu da (deniz vb.) cache'lenir.
+
         Adres bulunamazsa None döner
         """
+        # `+ 0.0`: round(-0.0004, 3) == -0.0 olur ve anahtarda 0.0'dan farklı çıkar.
+        enlem = round(enlem, NOMINATIM_KOORDINAT_BASAMAK) + 0.0
+        boylam = round(boylam, NOMINATIM_KOORDINAT_BASAMAK) + 0.0
         params = {
             "lat": enlem,
             "lon": boylam,
@@ -313,9 +327,12 @@ class _AramaMixin:
                 raise MGMWeatherError(
                     f"Nominatim ters geocoding servisinden veri alınamadı: {exc}"
                 ) from exc
-            return veri.get("address")
+            # Cache yalnızca JSON object/array kabul eder; None yazılmaya
+            # çalışılınca hata fırlatır ve "adres yok" sonucu hiç cache'lenmezdi
+            # (her istek Nominatim'e tekrar giderdi). Boş dict bunun işaretçisidir.
+            return veri.get("address") or {}
 
-        return self._cached_get(cache_key, loader)
+        return self._cached_get(cache_key, loader) or None
 
     @staticmethod
     def _nominatim_il_ilce_adaylari(adres: dict[str, Any]) -> tuple[str | None, str | None]:

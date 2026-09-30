@@ -141,6 +141,8 @@ Verilen enlem ve boylam koordinatları üzerinden hava durumu bilgisini getirir.
 
 > **Rate Limiting hakkında:**
 > Bu uç nokta, arka planda ücretsiz Nominatim sunucularını kullandığı için saniyede 1 istek limitiyle çalışır. Projenin yerleşik Cache ve SWR yapısı tekrarlayan istekleri önleyerek bu limiti korur. Yüksek trafikli bir ortama dağıtım yapacaksanız kendi Nominatim sunucunuzu kurmanız veya alternatif bir servis kullanmanız önerilir
+>
+> **Nominatim cache'i:** Koordinatlar cache anahtarına girmeden önce 3 ondalık basamağa (≈110 m) yuvarlanır ve Nominatim'e de yuvarlanmış değer sorulur. Telefon GPS'i aynı yerde dururken bile son basamaklarda oynadığı için ham koordinatla cache isabeti neredeyse hiç olmazdı. "Adres bulunamadı" sonucu (deniz vb.) de cache'lenir, böylece aynı noktayı tekrar tekrar Nominatim'e sormaz. Nominatim'e giden konum bilgisi de bu yüzden ~110 m hassasiyete iner. Bağlantı hatası cache'lenmez, sonraki istek yeniden dener.
 
 ## Meteorolojik Uyarılar (`/uyarilar`) - Deneysel
 

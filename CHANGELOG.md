@@ -6,6 +6,20 @@ Bu proje [Semantik Sürümleme](https://semver.org/lang/tr/) kullanır.
 
 ## [Yayınlanmadı]
 
+- **Nominatim cache'i — GPS titremesi ve "adres yok" sonucu:**
+  1. Koordinatlar cache anahtarına girmeden önce 3 ondalık basamağa (≈110 m)
+     yuvarlanır (`NOMINATIM_KOORDINAT_BASAMAK`); Nominatim'e de yuvarlanmış değer
+     sorulur. Eskiden ham float anahtar olduğu için aynı yerde duran bir
+     telefonun GPS titremesi her istekte cache ıskalıyordu. Yan etki: üçüncü
+     tarafa giden konum ~110 m hassasiyete iner.
+  2. **Düzeltme:** Nominatim adres bulamayınca (deniz koordinatı gibi) sonuç hiç
+     cache'lenmiyordu: cache yalnızca JSON object/array kabul ettiği için `None`
+     yazılırken `MGMWeatherError` fırlıyor, `hava_durumu_konum` bunu yutup Open-Meteo'ya
+     düştüğü için sonuç doğru görünüyor ama aynı nokta her seferinde Nominatim'e
+     tekrar soruluyordu. Docstring "None döner" diyordu; cache kapalıyken öyleydi,
+     açıkken hata fırlatıyordu. Artık her iki durumda `None` döner ve sonuç cache'lenir.
+  3. `-0.0` ile `0.0` aynı anahtara düşer. Bağlantı hataları cache'lenmez.
+
 - **Kaynak sağlığı — dış servislerin ayrı ayrı izlenmesi:**
   1. `GET /health/kaynaklar`: MGM, Open-Meteo, Nominatim, İBB, sunrise-sunset ve
      Piri Reis için pasif sağlık özeti (`durum`: bilinmiyor | ok | kararsiz | hata,

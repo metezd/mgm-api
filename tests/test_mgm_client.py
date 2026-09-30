@@ -1548,6 +1548,92 @@ class TestKonumCozumleyici(unittest.TestCase):
         client2._nominatim_ters_geocode(42.0, 30.0)
         self.assertTrue(any(h and "User-Agent" in h for h in cagrilar))
 
+    # --- Nominatim cache: koordinat yuvarlama + "adres yok" sonucu ---
+
+    _ADRES: ClassVar[dict[str, str]] = {"state": "İstanbul", "county": "Kadıköy"}
+
+    def _nominatim_istemci(self, adres):
+        session = _KonumSession(nominatim_adres=adres)
+        client = MGMWeather(cache_ttl_seconds=60, timeout=1, retry_total=0)
+        client.session = session
+        return client, session
+
+    @staticmethod
+    def _nominatim_istekleri(session):
+        return [params for url, params in session.calls if "nominatim.openstreetmap.org" in url]
+
+    def test_gps_titremesi_ayni_cache_kaydina_duser(self):
+        # Telefon aynı yerde dururken 5.-7. ondalıkta oynar; ham float anahtarla
+        # her istek Nominatim'e (saniyede 1 istek politikasına rağmen) giderdi.
+        client, session = self._nominatim_istemci(self._ADRES)
+
+        for enlem, boylam in [(40.99012, 29.02034), (40.99017, 29.02031), (40.99009, 29.02038)]:
+            self.assertEqual(client._nominatim_ters_geocode(enlem, boylam), self._ADRES)
+
+        self.assertEqual(len(self._nominatim_istekleri(session)), 1)
+
+    def test_nominatime_yuvarlanmis_koordinat_sorulur(self):
+        client, session = self._nominatim_istemci(self._ADRES)
+
+        client._nominatim_ters_geocode(40.99012, 29.02034)
+
+        (params,) = self._nominatim_istekleri(session)
+        self.assertEqual((params["lat"], params["lon"]), (40.99, 29.02))
+
+    def test_yaklasik_1_km_uzaktaki_noktalar_ayri_kaydedilir(self):
+        # Aşırı yuvarlamaya karşı koruma: 0.009° ≈ 1 km, farklı hücreler olmalı.
+        client, session = self._nominatim_istemci(self._ADRES)
+
+        client._nominatim_ters_geocode(40.990, 29.020)
+        client._nominatim_ters_geocode(40.999, 29.020)
+
+        self.assertEqual(len(self._nominatim_istekleri(session)), 2)
+
+    def test_eksi_sifir_ile_arti_sifir_ayni_anahtara_duser(self):
+        # round(-0.0004, 3) == -0.0 ve json'da "0.0"dan farklı serileşirdi.
+        client, session = self._nominatim_istemci(self._ADRES)
+
+        client._nominatim_ters_geocode(-0.0004, 10.0)
+        client._nominatim_ters_geocode(0.0004, 10.0)
+
+        istekler = self._nominatim_istekleri(session)
+        self.assertEqual(len(istekler), 1)
+        self.assertEqual(str(istekler[0]["lat"]), "0.0")  # "-0.0" değil
+
+    def test_adres_bulunamayinca_cache_acikken_de_none_doner(self):
+        # Eskiden cache açıkken None yazılmaya çalışılır ve MGMWeatherError
+        # fırlardı (cache kapalıyken None dönerdi): docstring ile çelişiyordu.
+        client, _ = self._nominatim_istemci(None)
+
+        self.assertIsNone(client._nominatim_ters_geocode(38.5, 24.0))
+
+    def test_adres_bulunamayan_koordinat_cache_lenir(self):
+        client, session = self._nominatim_istemci(None)
+
+        for _ in range(3):
+            client._nominatim_ters_geocode(38.5, 24.0)
+
+        self.assertEqual(len(self._nominatim_istekleri(session)), 1)
+
+    def test_konum_akisinda_deniz_koordinati_tekrar_sorulmaz(self):
+        client, session = self._nominatim_istemci(None)
+
+        for _ in range(3):
+            sonuc = client.hava_durumu_konum(38.5, 24.0)
+
+        self.assertEqual(sonuc["yontem"], "open-meteo-dogrudan")
+        self.assertEqual(len(self._nominatim_istekleri(session)), 1)
+
+    def test_nominatim_hatasi_cache_lenmez_sonraki_istek_tekrar_dener(self):
+        # Geçici bir kesinti kalıcı "adres yok" olarak cache'e girmemeli.
+        client, session = self._nominatim_istemci(self._ADRES)
+        session.nominatim_hata = True
+        with self.assertRaises(MGMWeatherError):
+            client._nominatim_ters_geocode(40.99, 29.02)
+
+        session.nominatim_hata = False
+        self.assertEqual(client._nominatim_ters_geocode(40.99, 29.02), self._ADRES)
+
 
 class TestPrometheusMetrikleri(unittest.TestCase):
     """_cached_get()'in hit/stale_hit/miss dallarının Prometheus
