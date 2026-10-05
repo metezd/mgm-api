@@ -5,6 +5,7 @@ import time
 import unittest
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import requests
 
@@ -1560,7 +1561,11 @@ class TestKonumCozumleyici(unittest.TestCase):
 
     @staticmethod
     def _nominatim_istekleri(session):
-        return [params for url, params in session.calls if "nominatim.openstreetmap.org" in url]
+        return [
+            params
+            for url, params in session.calls
+            if urlparse(url).hostname == "nominatim.openstreetmap.org"
+        ]
 
     def test_gps_titremesi_ayni_cache_kaydina_duser(self):
         # Telefon aynı yerde dururken 5.-7. ondalıkta oynar; ham float anahtarla
