@@ -9,7 +9,7 @@ Flask-Compress==1.25
 idna==3.19
 itsdangerous==2.2.0
 Jinja2==3.1.6
-MarkupSafe==3.0.3
+MarkupSafe==3.0.4
 prometheus_client==0.26.0
 pydantic==2.13.5
 pydantic_core==2.46.5
